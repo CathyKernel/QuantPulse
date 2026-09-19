@@ -80,33 +80,48 @@
     return lastClose(tk);
   }
   function dayChangePct(tk) {
+    // deliberately PRICE-based even under the total-return basis: it is a
+    // quote-screen convention shown next to the traded price, not a
+    // performance statistic (ex-div drops stay visible as price moves)
     var f = LV.forming[tk];
+    var prev = lastClose(tk);
     if (f && f.o != null) {
       // forming session: change vs previous close (= last merged close)
-      var prev = lastClose(tk);
       return prev ? f.c / prev - 1 : null;
     }
-    var r = S.rets[S.rets.length - 1];
-    var t = TICKERS.indexOf(tk);
-    return r ? r[t] : null;
+    var arr = D.close[tk];
+    var n = arr.length;
+    return n > 1 && arr[n - 1] != null && arr[n - 2] != null ? arr[n - 1] / arr[n - 2] - 1 : null;
+  }
+  // window returns follow the ACTIVE return basis: under total-return,
+  // ex-date dividends inside the window are added back to the end price
+  function basisDivAdj(tk, fromIdx) {
+    if (core.getReturnBasis() !== "total") return 0;
+    var n = D.close[tk].length;
+    var div = core.divSumIdx(tk, fromIdx, n - 1);
+    var f = LV.forming[tk];
+    if (f && f.date) div += core.divOn(tk, f.date);   // forming ex-date
+    return div;
   }
   function retOver(tk, backDays) {
     var arr = D.close[tk];
     var n = arr.length;
-    var a = arr[Math.max(0, n - 1 - backDays)];
-    var b = livePrice(tk);
-    return a != null && b != null ? b / a - 1 : null;
+    var i0 = Math.max(0, n - 1 - backDays);
+    var a = arr[i0], b = livePrice(tk);
+    if (a == null || b == null) return null;
+    return (b + basisDivAdj(tk, i0)) / a - 1;
   }
   function ytdReturn(tk) {
     var arr = D.close[tk];
-    var year = D.dates[D.dates.length - 1].slice(0, 4);
-    var a = null;
-    for (var i = arr.length - 1; i >= 0; i--) {
-      if (D.dates[i].slice(0, 4) !== year) break;
-      a = arr[i];
+    var n = arr.length;
+    var year = D.dates[n - 1].slice(0, 4);
+    var i0 = 0, a = null;
+    for (var i = n - 1; i >= 0; i--) {
+      if (D.dates[i].slice(0, 4) !== year) { i0 = i; a = arr[i]; break; }
     }
     var b = livePrice(tk);
-    return a != null && b != null ? b / a - 1 : null;
+    if (a == null || b == null) return null;
+    return (b + basisDivAdj(tk, i0)) / a - 1;
   }
   function fmtTime(iso) {
     if (!iso) return "–";
@@ -116,8 +131,17 @@
   }
 
   /* ========================= header strip ============================== */
+  // sync every [data-basis-hint] with the active return basis
+  function updateBasisHints() {
+    var nodes = document.querySelectorAll("[data-basis-hint]");
+    var suffix = core.getReturnBasis() === "total" ? "total-return basis (divs on ex-date)" : "price basis";
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = (nodes[i].getAttribute("data-static") || "") + " · " + suffix;
+    }
+  }
+
   function renderHeader() {
-    var bench = D.benchmark;
+    var bench = S.benchLevel;   // active-basis equal-weight index
     var lastB = bench[bench.length - 1];
     var forming = Object.keys(LV.forming).length > 0;
     var dayChg, idxVal;
@@ -152,6 +176,7 @@
       '<span class="ms-item"><span class="ms-label">Names</span><span class="ms-val">' + N + " · " + core.SECTOR_LIST.length + " sectors</span></span>";
 
     $("ft-date").textContent = D.dates[D.dates.length - 1] + (LV.lastBars ? " (+" + LV.lastBars + " live)" : "");
+    updateBasisHints();
   }
 
   function renderClock() {
@@ -212,14 +237,19 @@
   /* ============================ OVERVIEW =============================== */
   function universeCAGR() {
     var years = DAYS() / 252;
-    return Math.pow(D.benchmark[D.benchmark.length - 1] / 100, 1 / years) - 1;
+    var bl = S.benchLevel;
+    return Math.pow(bl[bl.length - 1] / 100, 1 / years) - 1;
   }
   function bestPerformer() {
     var best = null;
+    var total = core.getReturnBasis() === "total";
     TICKERS.forEach(function (tk) {
       var arr = D.close[tk];
-      var r = arr[arr.length - 1] / arr[0] - 1;
-      if (arr[0] && (!best || r > best.r)) best = { tk: tk, r: r };
+      var n = arr.length;
+      if (!arr[0]) return;
+      var r = arr[n - 1] / arr[0] - 1;
+      if (total) r = (arr[n - 1] + core.divSumIdx(tk, 0, n - 1)) / arr[0] - 1;
+      if (!best || r > best.r) best = { tk: tk, r: r };
     });
     return best;
   }
@@ -251,20 +281,23 @@
         '<div class="stat-sub">' + s.sub + "</div>"));
     });
 
-    // universe index (downsampled) + live point
+    // universe index on the ACTIVE basis (downsampled) + live point
     var step = Math.max(1, Math.floor(DAYS() / 1200));
     var dates = [], bench = [];
+    var bl = S.benchLevel;
     for (var i = 0; i < DAYS(); i += step) {
       dates.push(D.dates[i]);
-      bench.push(D.benchmark[i]);
+      bench.push(bl[i]);
     }
     dates.push(D.dates[DAYS() - 1]);
-    bench.push(D.benchmark[D.benchmark.length - 1]);
+    bench.push(bl[bl.length - 1]);
     chartOf("ov-benchmark", CH.LineChart, {
       yFmt: function (v) { return fmt.num(v, 0); },
       tipFmt: function (v) { return fmt.num(v, 1); },
     }).setData(dates, [
-      { name: "equal-weight universe (base 100)", data: bench, color: C.cyan, fill: "rgba(37,211,224,0.13)", width: 2 },
+      { name: core.getReturnBasis() === "total"
+        ? "equal-weight universe · total return (base 100)"
+        : "equal-weight universe (base 100)", data: bench, color: C.cyan, fill: "rgba(37,211,224,0.13)", width: 2 },
     ]);
 
     // live movers (day change)
@@ -1127,6 +1160,7 @@
     var avgSharpe = core.stats.mean(risks.map(function (r) { return r.sharpe; }));
     var worst = risks.reduce(function (a, b) { return a.maxdd < b.maxdd ? a : b; });
     var best = risks.slice().sort(function (a, b) { return b.sharpe - a.sharpe; })[0];
+    var dv = core.divStats();
     var box = $("r-stats");
     box.innerHTML = "";
     [
@@ -1134,6 +1168,7 @@
       { label: "Average Sharpe", value: avgSharpe.toFixed(2), sub: "daily data · rf = 0", cls: "up" },
       { label: "Deepest drawdown", value: fmt.pctAbs(worst.maxdd, 1), sub: worst.ticker + " · peak to trough", cls: "down" },
       { label: "Best Sharpe", value: best.ticker, sub: fmt.num(best.sharpe, 2) + " · " + best.name, cls: "up" },
+      { label: "Dividend payers", value: dv.payers + " / " + N, sub: dv.total.toLocaleString() + " ex-dates · avg 12m yield " + fmt.pctAbs(dv.avgYield, 1) + " · switch basis in the header", cls: "" },
     ].forEach(function (s) {
       box.appendChild(el("div", "stat",
         '<div class="stat-label">' + s.label + '</div>' +
@@ -1177,7 +1212,9 @@
         '<td class="neg">' + fmt.pctAbs(r.var95, 1) + "</td>" +
         '<td class="neg">' + fmt.pctAbs(r.cvar95, 1) + "</td>" +
         "<td>" + fmt.num(r.beta, 2) + "</td>" +
-        '<td class="' + (r.cagr >= 0 ? "up" : "down") + '">' + fmt.pctAbs(r.cagr, 1) + "</td>";
+        '<td class="' + (r.cagr >= 0 ? "up" : "down") + '">' + fmt.pctAbs(r.cagr, 1) + "</td>" +
+        '<td class="' + (r.yld >= 0.03 ? "up" : "") + '">' +
+        (r.yld ? fmt.pctAbs(r.yld, 1) : "–") + "</td>";
       tb.appendChild(tr);
     });
   }
@@ -1281,10 +1318,11 @@
 
     ctx.font = "10px " + "'SF Mono',Consolas,monospace";
     ctx.textBaseline = "middle";
-    // y ticks
+    // y ticks (skip 0 — it sits on the baseline next to the x-axis labels)
     ctx.fillStyle = C.dim;
     ctx.textAlign = "right";
     for (var c = 0; c <= maxC; c += Math.ceil(maxC / 3)) {
+      if (c === 0) continue;
       var y = mapY(c);
       ctx.fillText(String(c), pad.l - 6, y);
       ctx.strokeStyle = "rgba(255,255,255,0.05)";
@@ -1300,25 +1338,71 @@
       var yTop = mapY(counts[b2]);
       ctx.fillRect(x, yTop, bw, pad.t + plotH - yTop);
     }
-    // VaR / CVaR lines
-    [[var95, "VaR 95", C.down], [cvar95, "CVaR 95", C.magenta]].forEach(function (m) {
-      var x = mapX(m[0]);
-      ctx.strokeStyle = m[2];
+    // VaR / CVaR lines with collision-free labels. CVaR ≤ VaR always, so
+    // the two dashed lines sit close together in the left tail and their
+    // labels would print on top of each other on a single row — measure
+    // both boxes, share row 1 when they clear each other, else move the
+    // CVaR label down to row 2 (tail bins are short, so row 2 is clean).
+    var rows = [pad.t + 8, pad.t + 20];
+    var varLbl = "VaR 95 " + fmt.pctAbs(var95, 1);
+    var cvarLbl = "CVaR 95 " + fmt.pctAbs(cvar95, 1);
+    function labelBox(x, txt, row) {
+      var tw = ctx.measureText(txt).width;
+      var left = x + 5;                       // default: right of the line
+      if (left + tw > w - pad.r) left = x - 5 - tw; // hug the right edge → flip
+      if (left < 2) left = 2;                // never clip past the left edge
+      return { l: left, r: left + tw, y: rows[row], h: 10 };
+    }
+    function boxesHit(a, b) {
+      return a.l < b.r + 4 && b.l < a.r + 4; // +4px breathing room
+    }
+    var marks = [
+      { v: var95, txt: varLbl, color: C.down },
+      { v: cvar95, txt: cvarLbl, color: C.magenta },
+    ];
+    // VaR claims row 1; CVaR joins row 1 only if the boxes clear each other.
+    var boxV = labelBox(mapX(marks[0].v), marks[0].txt, 0);
+    var boxC = labelBox(mapX(marks[1].v), marks[1].txt, 0);
+    if (boxesHit(boxV, boxC)) boxC = labelBox(mapX(marks[1].v), marks[1].txt, 1);
+    marks[0].box = boxV; marks[1].box = boxC;
+    marks.forEach(function (m) {
+      var x = mapX(m.v);
+      ctx.strokeStyle = m.color;
       ctx.setLineDash([5, 4]);
       ctx.beginPath(); ctx.moveTo(x + 0.5, pad.t); ctx.lineTo(x + 0.5, pad.t + plotH); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = m[2];
-      ctx.textAlign = x < w - 60 ? "left" : "right";
-      ctx.fillText(m[1] + " " + fmt.pctAbs(m[0], 1), x + (x < w - 60 ? 5 : -5), pad.t + 8);
+      ctx.fillStyle = m.color;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(m.txt, m.box.l, m.box.y);
     });
-    // x labels
+    // x labels — thin out adaptively so labels never collide on narrow
+    // canvases: keep 0 unconditionally, then greedily outward.
     ctx.fillStyle = C.dim;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    [-0.04, -0.02, 0, 0.02, 0.04].forEach(function (v) {
-      if (v > lo && v < hi) ctx.fillText(fmt.pctAbs(v, 1), mapX(v), pad.t + plotH + 6);
-    });
+    var xt = [-0.04, -0.02, 0, 0.02, 0.04].filter(function (v) { return v > lo && v < hi; });
+    if (xt.length) {
+      var maxW = 0;
+      xt.forEach(function (v) { maxW = Math.max(maxW, ctx.measureText(fmt.pctAbs(v, 1)).width); });
+      var zi = xt.indexOf(0);
+      var keep = zi >= 0 ? [zi] : [];
+      var lastKept = zi >= 0 ? mapX(0) : null;
+      for (var xr = zi + 1; xr < xt.length; xr++) {
+        var xR = mapX(xt[xr]);
+        if (lastKept == null || xR - lastKept >= maxW + 8) { keep.push(xr); lastKept = xR; }
+      }
+      lastKept = zi >= 0 ? mapX(0) : null;
+      for (var xl = zi - 1; xl >= 0; xl--) {
+        var xL = mapX(xt[xl]);
+        if (lastKept == null || lastKept - xL >= maxW + 8) { keep.push(xl); lastKept = xL; }
+      }
+      keep.sort(function (a, b) { return a - b; }).forEach(function (k) {
+        ctx.fillText(fmt.pctAbs(xt[k], 1), mapX(xt[k]), pad.t + plotH + 6);
+      });
+    }
     ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
     ctx.fillText("daily returns distribution", pad.l, 4);
   }
 
@@ -1811,6 +1895,25 @@
   $("hd-interval").addEventListener("change", function () {
     live.setInterval(parseInt(this.value, 10));
     toast(this.value === "0" ? "Auto-refresh paused — use the refresh button" : "Auto-refresh: every " + this.value + "s", "ok");
+  });
+
+  // return-basis switch (PRICE / TOTAL): re-derive every return-driven view.
+  // A running ML training is cancelled — the ML tab restarts on the new
+  // basis when revisited (or immediately, if it is the active tab).
+  bindSeg("hd-basis", function (v) {
+    if (v === core.getReturnBasis()) return;
+    if (mlState.running && mlState.handle) mlState.handle.cancel();
+    mlSetBusy(false);
+    core.setReturnBasis(v);
+    QP.ml.invalidate();
+    mlState.result = null;
+    mlBT = null;
+    rendered = {};
+    renderTab(activeTab, true);
+    renderHeader();
+    toast(v === "total"
+      ? "Total-return basis — cash dividends added back on ex-dates (risk, backtests, ICs, ML re-derived)"
+      : "Price-return basis — dividends excluded from returns", "ok");
   });
 
   live.start();

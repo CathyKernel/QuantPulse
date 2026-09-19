@@ -43,6 +43,10 @@
       <span id="hd-clock" class="hd-clock">--:--:-- ET</span>
       <span id="live-badge" class="live-badge connecting" title="Connecting…">CONNECTING</span>
       <span id="hd-updated" class="hd-updated">—</span>
+      <div class="seg" id="hd-basis" role="group" aria-label="Return basis" title="Return basis for analytics — PRICE excludes dividends; TOTAL adds cash dividends back on their ex-date (matters most for high-yield names)">
+        <button data-v="price" class="seg-btn active">PRICE</button>
+        <button data-v="total" class="seg-btn">TOTAL</button>
+      </div>
       <select id="hd-interval" class="select select-sm" title="Auto-refresh interval" aria-label="Auto-refresh interval">
         <option value="15">15s</option>
         <option value="30" selected>30s</option>
@@ -93,7 +97,7 @@
           <div id="ov-sectors" class="chart-md"></div>
         </article>
         <article class="card">
-          <h2>Trailing 1-year return <span class="hint">by ticker</span></h2>
+          <h2>Trailing 1-year return <span class="hint" data-basis-hint data-static="by ticker">by ticker</span></h2>
           <div id="ov-yearret" class="chart-md"></div>
         </article>
       </div>
@@ -274,7 +278,7 @@
     <section id="panel-backtest" class="panel hidden" role="tabpanel" aria-labelledby="tab-backtest">
       <article class="card card-wide">
         <div class="card-head">
-          <h2>Strategy <span class="hint">position-based engine · runs in your browser</span></h2>
+          <h2>Strategy <span class="hint" data-basis-hint data-static="position-based engine · runs in your browser">position-based engine · runs in your browser</span></h2>
           <div class="controls">
             <label for="b-strat" class="visually-hidden">Signal</label>
             <select id="b-strat" class="select"></select>
@@ -463,7 +467,7 @@
           <p class="card-note">x = annualized volatility, y = annualized return. Upper-left names earned more per unit of risk.</p>
         </article>
         <article class="card">
-          <h2>Asset risk table <span class="hint">click a header to sort</span></h2>
+          <h2>Asset risk table <span class="hint" data-basis-hint data-static="click a header to sort">click a header to sort</span></h2>
           <div class="table-wrap risk-table-wrap">
             <table class="data-table" id="r-table">
               <thead>
@@ -477,6 +481,7 @@
                   <th data-k="cvar95">CVaR 95</th>
                   <th data-k="beta">Beta</th>
                   <th data-k="cagr">CAGR</th>
+                  <th data-k="yld" title="Trailing 12-month cash dividend / last close">Div yld</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -501,7 +506,7 @@
       </div>
 
       <article class="card card-wide">
-        <h2>Return distribution <span class="hint">daily · VaR &amp; CVaR at 95%</span></h2>
+        <h2>Return distribution <span class="hint" data-basis-hint data-static="daily · VaR &amp; CVaR at 95%">daily · VaR &amp; CVaR at 95%</span></h2>
         <div class="hist-wrap"><canvas id="r-histogram"></canvas></div>
       </article>
     </section>
@@ -532,7 +537,9 @@
         <h3>Live updates</h3>
         <p>Quotes refresh on the selected interval while the tab is visible; the endpoint alternates between <code>/api/quotes</code> and direct fallbacks. If the live feed is unreachable, the terminal degrades gracefully to the bundled snapshot — every module keeps working.</p>
         <h3>Corporate actions — splits &amp; dividends</h3>
-        <p>The live feed carries Yahoo's split and dividend event calendar. When a split's ex-date falls after the snapshot date, the entire bundled history for that stock is rescaled to the new share basis (prices × denominator/numerator, volumes × numerator/denominator) before the merge — so a 10-for-1 split never contaminates returns, factors, backtests or risk stats with a fake −90% day, and split events that arrive after their bar has merged are repaired retroactively. Dividend ex-dates are deliberately left in the price chain (a price-return convention): the detector uses the dividend calendar to avoid mistaking an ex-dividend gap for a split. Boundary gaps that neither a split event nor a cash dividend explains are re-checked against a one-year event calendar before anything is adjusted — and when the evidence is inconclusive, QuantPulse warns and leaves the data untouched rather than guessing silently.</p>
+        <p>The live feed carries Yahoo's split and dividend event calendar. When a split's ex-date falls after the snapshot date, the entire bundled history for that stock is rescaled to the new share basis (prices × denominator/numerator, volumes × numerator/denominator) before the merge — so a 10-for-1 split never contaminates returns, factors, backtests or risk stats with a fake −90% day, and split events that arrive after their bar has merged are repaired retroactively. The split detector factors cash dividends out of boundary gaps before judging them, so an ex-dividend drop is never mistaken for a split. Boundary gaps that neither a split event nor a cash dividend explains are re-checked against a one-year event calendar before anything is adjusted — and when the evidence is inconclusive, QuantPulse warns and leaves the data untouched rather than guessing silently.</p>
+        <h3>Return basis — price vs total return</h3>
+        <p>The header's PRICE / TOTAL switch selects the return convention for analytics. PRICE chains raw closes, so cash dividends appear as ex-date price drops — the honest choice when comparing price charts. TOTAL adds each cash dividend back on its ex-date ((close + dividend) / previous close − 1), the standard approximation to a dividend-reinvested index — the honest choice for high-yield names, where price return understates realized performance year after year. The basis propagates to risk statistics (vol, Sharpe, Sortino, VaR/CVaR, beta, correlations, drawdowns), backtests and their benchmark, IC and quintile forward returns, ML training targets, screener windows and the universe index. Candlesticks, the Terminal's price charts and factor signals themselves stay price-based — a candle cannot embed a cash payout, and momentum-type signals are classically price-based. The dividend calendar (1,400+ ex-dates since 2015) ships with the bundle and extends live as new ex-dates merge. Day-change percentages on quote screens remain price-based by convention.</p>
       </div>
     </div>
   </div>
@@ -541,6 +548,7 @@
   <div id="tooltip" class="tooltip hidden" role="tooltip"></div>
 
   <script src="js/data.js"></script>
+  <script src="js/divs.js"></script>
   <script src="js/charts.js"></script>
   <script src="js/live.js"></script>
   <script src="js/core.js"></script>

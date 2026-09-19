@@ -179,12 +179,12 @@
         for (t = 0; t < N; t++) X[t][f] = z[t];
       }
       if (!colOK) continue;
-      // target: next 21 trading days
+      // target: next 21 trading days — on the ACTIVE return basis
+      // (total-return labels include ex-date dividends when toggled)
       var y = new Array(N);
       var hasTarget = false;
       for (t = 0; t < N; t++) {
-        var a = S.closeMat[i][t], b = i + 21 < DAYS ? S.closeMat[i + 21][t] : null;
-        y[t] = a != null && b != null ? b / a - 1 : null;
+        y[t] = core.fwdReturn(t, i, i + 21 < DAYS ? i + 21 : null);
         if (y[t] != null) hasTarget = true;
       }
       months.push({ i: i, label: core.D.dates[i].slice(0, 7), X: X, y: y, hasTarget: hasTarget });

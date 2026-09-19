@@ -92,11 +92,122 @@
     }
   });
 
+  /* ============== dividends & the return basis switch ================ */
+  /* Cash-dividend calendar powering the total-return basis. js/divs.js
+     bundles each ticker's full ex-date history from the first bundled
+     session onward; live quote payloads fold newer events in at merge
+     time (idempotently, so repeated polls are safe).
+
+     Under the "total" basis the daily return of an ex-date becomes
+     (close + div) / prevClose − 1 — the standard "dividend added back on
+     the ex-date" convention — and it propagates everywhere returns are
+     chained: risk stats, backtests, IC / quintile forward returns, ML
+     targets, screener windows and the equal-weight benchmark. Prices,
+     candles and factor *signals* deliberately stay on the raw price
+     chain: a candlestick cannot embed a cash payout, and momentum-type
+     signals are classically price-based.                                                */
+  var DIV_LISTS = window.QP_DIVS || {};
+  var DIV_MAP = {};            // tk -> { "YYYY-MM-DD": amount }
+  var DIV_PREFIX = {};         // tk -> Float64Array(D.dates) cumulative div by day
+  var returnBasis = "price";   // "price" | "total"
+
+  Object.keys(DIV_LISTS).forEach(function (tk) {
+    DIV_MAP[tk] = {};
+    DIV_LISTS[tk].forEach(function (d) { DIV_MAP[tk][d[0]] = d[1]; });
+  });
+
+  function buildDivPrefixes() {
+    DIV_PREFIX = {};
+    Object.keys(DIV_MAP).forEach(function (tk) {
+      var m = DIV_MAP[tk];
+      var cum = new Float64Array(D.dates.length);
+      for (var i = 1; i < D.dates.length; i++) {
+        var dv = m[D.dates[i]];
+        cum[i] = cum[i - 1] + (typeof dv === "number" && isFinite(dv) && dv > 0 ? dv : 0);
+      }
+      DIV_PREFIX[tk] = cum;
+    });
+  }
+  // fold dividend events from a live payload; returns true when a NEW
+  // ex-date inside the already-merged history was added (total-basis
+  // returns change → the caller must rebuild derived state)
+  function mergeDividends(tk, list) {
+    if (!list || !list.length) return false;
+    var m = DIV_MAP[tk] = DIV_MAP[tk] || {};
+    var lastDate = D.dates[D.dates.length - 1];
+    var added = false;
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i][0], amt = list[i][1];
+      if (typeof amt !== "number" || !isFinite(amt) || amt <= 0) continue;
+      if (m[d] == null) {
+        m[d] = amt;
+        if (d <= lastDate) added = true;
+      }
+    }
+    return added;
+  }
+  function divOn(tk, dateStr) {
+    var m = DIV_MAP[tk];
+    var v = m ? m[dateStr] : null;
+    return typeof v === "number" && isFinite(v) ? v : 0;
+  }
+  // dividends whose ex-date index lies in (i, j]
+  function divSumIdx(tk, i, j) {
+    var cum = DIV_PREFIX[tk];
+    if (!cum || !cum.length) return 0;
+    var a = Math.max(0, Math.min(i, cum.length - 1));
+    var b = Math.max(0, Math.min(j, cum.length - 1));
+    return cum[b] - cum[a];
+  }
+  // basis-aware forward return between day indices for ticker index t
+  function fwdReturn(t, i, j) {
+    if (j == null || j < 0 || j >= S.closeMat.length) return null;
+    var a = S.closeMat[i][t], b = S.closeMat[j][t];
+    if (a == null || b == null) return null;
+    if (returnBasis !== "total") return b / a - 1;
+    return (b + divSumIdx(TICKERS[t], i, j)) / a - 1;
+  }
+  // trailing-12m cash yield on the last merged close
+  function trailingDivYield(tk) {
+    var arr = D.close[tk];
+    var last = arr[arr.length - 1];
+    if (!(last > 0)) return null;
+    var cut = D.dates[D.dates.length - 1];
+    var yearAgo = (parseInt(cut.slice(0, 4), 10) - 1) + cut.slice(4);
+    var m = DIV_MAP[tk];
+    if (!m) return 0;
+    var sum = 0, cnt = 0;
+    Object.keys(m).forEach(function (d) {
+      if (d > yearAgo && d <= cut) { sum += m[d]; cnt++; }
+    });
+    return cnt ? sum / last : 0;
+  }
+  function divStats() {
+    var payers = 0, total = 0, ylds = [];
+    TICKERS.forEach(function (tk) {
+      var m = DIV_MAP[tk];
+      var c = m ? Object.keys(m).length : 0;
+      total += c;
+      if (c) payers++;
+      var y = trailingDivYield(tk);
+      if (y > 0) ylds.push(y);
+    });
+    return { payers: payers, total: total, avgYield: ylds.length ? mean(ylds) : 0 };
+  }
+  function setReturnBasis(b) {
+    if (b !== "price" && b !== "total") return;
+    if (b === returnBasis) return;
+    returnBasis = b;
+    rebuildDerived();
+  }
+  function getReturnBasis() { return returnBasis; }
+
   // mutable derived state
   var S = {
     closeMat: [],       // [day][ticker] closes
-    rets: [],           // [day][ticker] daily returns (rets[0] = null)
-    benchRets: [],      // [day] equal-weight universe daily returns
+    rets: [],           // [day][ticker] daily returns on the ACTIVE basis (rets[0] = null)
+    benchRets: [],      // [day] equal-weight universe daily returns (active basis)
+    benchLevel: [],     // [day] equal-weight index level on the active basis (base 100)
     monthEnds: [],      // indices of month-end days (+ last bar = partial month)
     dateIdx: {},        // "YYYY-MM-DD" -> index in D.dates
     candleIdx: {},      // "YYYY-MM-DD" -> index in D.candle_dates
@@ -110,23 +221,41 @@
       for (var t = 0; t < N; t++) row[t] = D.close[TICKERS[t]][i];
       S.closeMat.push(row);
     }
+    var totalBasis = returnBasis === "total";
     S.rets = [null];
     for (i = 1; i < DAYS; i++) {
       var r = new Array(N);
+      var dstr = totalBasis ? D.dates[i] : null;
       for (t = 0; t < N; t++) {
         var a = S.closeMat[i - 1][t], b = S.closeMat[i][t];
-        r[t] = a && b ? b / a - 1 : null;
+        if (!a || !b) { r[t] = null; continue; }
+        r[t] = totalBasis ? (b + divOn(TICKERS[t], dstr)) / a - 1 : b / a - 1;
       }
       S.rets.push(r);
     }
+    // equal-weight benchmark on the ACTIVE basis: the bundled price chain,
+    // or a total-return chain re-derived from the rets matrix
     S.benchRets = [0];
-    for (i = 1; i < DAYS; i++) {
-      S.benchRets.push(D.benchmark[i] / D.benchmark[i - 1] - 1);
+    S.benchLevel = [100];
+    if (!totalBasis) {
+      for (i = 1; i < DAYS; i++) {
+        S.benchRets.push(D.benchmark[i] / D.benchmark[i - 1] - 1);
+        S.benchLevel.push(D.benchmark[i]);
+      }
+    } else {
+      for (i = 1; i < DAYS; i++) {
+        var row = S.rets[i] || [], vals = [];
+        for (t = 0; t < N; t++) if (row[t] != null) vals.push(row[t]);
+        var mr = vals.length ? mean(vals) : 0;
+        S.benchRets.push(mr);
+        S.benchLevel.push(S.benchLevel[i - 1] * (1 + mr));
+      }
     }
     S.dateIdx = {};
     D.dates.forEach(function (d, i) { S.dateIdx[d] = i; });
     S.candleIdx = {};
     D.candle_dates.forEach(function (d, i) { S.candleIdx[d] = i; });
+    buildDivPrefixes();
     S.monthEnds = [];
     for (i = 1; i < DAYS; i++) {
       if (D.dates[i].slice(0, 7) !== D.dates[i - 1].slice(0, 7)) S.monthEnds.push(i - 1);
@@ -418,6 +547,7 @@
     if (!(prevClose > 0)) return out;
 
     if (series) {
+      mergeDividends(tk, series.dividends);   // wider calendar → fold before judging
       var ev = handleEventSplits(tk, series.splits, series, lastDate, series.dividends, todayStr);
       if (ev.status === "apply" && ev.rec) {
         finalizeSplitApplication();
@@ -482,11 +612,17 @@
   }
 
   // rebuild the equal-weight benchmark from a day index onward (used after
-  // a late split repair changes historical returns)
+  // a late split repair changes historical returns). D.benchmark is BY
+  // DEFINITION the price-basis chain — re-chain it from raw closes so the
+  // repair stays correct even while the active return basis is "total"
+  // (S.rets would carry total-return values there).
   function rebuildBenchmarkFrom(dayIdx) {
     for (var i = Math.max(1, dayIdx); i < D.dates.length; i++) {
-      var rets = S.rets[i] || [], vals = [];
-      for (var t = 0; t < N; t++) if (rets[t] != null) vals.push(rets[t]);
+      var vals = [];
+      for (var t = 0; t < N; t++) {
+        var a = D.close[TICKERS[t]][i - 1], b = D.close[TICKERS[t]][i];
+        if (a != null && b != null) vals.push(b / a - 1);
+      }
       var mr = mean(vals);
       D.benchmark[i] = D.benchmark[i - 1] * (mr != null ? 1 + mr : 1);
     }
@@ -510,6 +646,15 @@
     //    basis changed after the snapshot BEFORE returns are chained, so the
     //    merge below computes continuous returns on the new basis.
     var splitReport = detectSplits(quotes, etInfo);
+
+    // 0.5) fold payload dividend events into the calendar — a new in-history
+    //     ex-date changes total-basis returns, so remember it for the rebuild
+    var divFolded = false;
+    Object.keys(quotes).forEach(function (sym) {
+      if (quotes[sym] && quotes[sym].dividends) {
+        if (mergeDividends(sym, quotes[sym].dividends)) divFolded = true;
+      }
+    });
 
     // 1) collect candidate completed bars (dates after the bundled snapshot)
     var cand = {}; // date -> {SYM: bar}
@@ -572,7 +717,7 @@
       });
     }
 
-    if (appended.length || splitReport.splits.length) {
+    if (appended.length || splitReport.splits.length || (divFolded && returnBasis === "total")) {
       rebuildDerived();
       // a late split repair rewrites a realised historical return — the
       // equal-weight benchmark must be re-chained from that day onward
@@ -741,8 +886,7 @@
     var sc = scoresFor(key, i);
     var fwd = new Array(N);
     for (var t = 0; t < N; t++) {
-      var a = S.closeMat[i][t], b = i + 21 < DAYS() ? S.closeMat[i + 21][t] : null;
-      fwd[t] = a != null && b != null ? b / a - 1 : null;
+      fwd[t] = fwdReturn(t, i, i + 21 < DAYS() ? i + 21 : null);
     }
     return spearman(sc, fwd);
   }
@@ -800,8 +944,8 @@
       var sc = scoresFor(key, i);
       var items = [];
       for (var t = 0; t < N; t++) {
-        var a = S.closeMat[i][t], b = S.closeMat[i + 21][t];
-        if (sc[t] != null && a != null && b != null) items.push({ t: t, s: sc[t], r: b / a - 1 });
+        var fr = fwdReturn(t, i, i + 21);
+        if (sc[t] != null && fr != null) items.push({ t: t, s: sc[t], r: fr });
       }
       if (items.length < 10) continue;
       items.sort(function (x, y) { return y.s - x.s; });
@@ -1071,7 +1215,7 @@
         ticker: TICKERS[t], name: BY_TICKER[TICKERS[t]].name,
         vol: m.vol, sharpe: m.sharpe, sortino: m.sortino, maxdd: m.maxdd,
         var95: var95, cvar95: cvar95, beta: m.beta, cagr: m.cagr,
-        skew: m.skew,
+        skew: m.skew, yld: trailingDivYield(TICKERS[t]),
       });
     }
     riskCache = out;
@@ -1112,11 +1256,24 @@
     var t = TICKERS.indexOf(tk);
     if (t < 0) return null;
     var out = [], peak = -Infinity;
-    for (var i = 0; i < DAYS(); i++) {
-      var px = S.closeMat[i][t];
+    if (returnBasis === "total") {
+      // drawdown of the total-return index (consistent with the risk table)
+      var eq = 1;
+      for (var i = 0; i < DAYS(); i++) {
+        if (i > 0) {
+          var rt = S.rets[i] ? S.rets[i][t] : null;
+          if (rt != null) eq *= 1 + rt;
+        }
+        peak = Math.max(peak, eq);
+        out.push({ date: D.dates[i], dd: eq / peak - 1 });
+      }
+      return out;
+    }
+    for (var j = 0; j < DAYS(); j++) {
+      var px = S.closeMat[j][t];
       if (px == null) continue;
       peak = Math.max(peak, px);
-      out.push({ date: D.dates[i], dd: px / peak - 1 });
+      out.push({ date: D.dates[j], dd: px / peak - 1 });
     }
     return out;
   }
@@ -1128,7 +1285,11 @@
     FACTOR_KEYS: FACTOR_KEYS, FACTOR_LABELS: FACTOR_LABELS,
     FACTOR_FNS: FACTOR_FNS, composite: compositeScores, scoresFor: scoresFor,
     state: S, DAYS: DAYS,
+    setReturnBasis: setReturnBasis, getReturnBasis: getReturnBasis,
+    divOn: divOn, divSumIdx: divSumIdx, fwdReturn: fwdReturn,
+    trailingDivYield: trailingDivYield, divStats: divStats, mergeDividends: mergeDividends,
     mergeLiveQuotes: mergeLiveQuotes, rebuildDerived: rebuildDerived,
+    rebuildBenchmarkFrom: rebuildBenchmarkFrom,
     resolveSuspectedSplit: resolveSuspectedSplit, splitLog: function () { return SPLIT_LOG.slice(); },
     icData: icData, quintileSpread: quintileSpread, factorCorrMatrix: factorCorrMatrix,
     runBacktest: runBacktest, perfMetrics: perfMetrics, assetRisk: assetRisk,

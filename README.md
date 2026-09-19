@@ -58,9 +58,11 @@ quantpulse/
 ├── css/style.css                 # dark terminal theme
 └── js/
     ├── data.js                   # bundled market snapshot (~1.7 MB)
+    ├── divs.js                   # bundled ex-dividend calendar since 2015
     ├── charts.js                 # zero-dependency canvas chart engine
     ├── live.js                   # polling, market clock, pub/sub, fallbacks
-    ├── core.js                   # live-merge engine, factors, IC, backtest, risk
+    ├── core.js                   # live-merge engine, factors, IC, backtest,
+    │                             #   risk + price/total return basis switch
     ├── ml.js                     # from-scratch ML: ridge / elastic net / MLP /
     │                             #   gradient boosting, purged walk-forward
     └── app.js                    # 7 modules: Overview / Terminal / Screener /
@@ -102,6 +104,19 @@ quantpulse/
   (purged walk-forward, no leakage). Out-of-sample results on a 38-name
   mega-cap panel are honestly thin (OOS ICs of a few hundredths with
   t-stats under 1): the lab is a methodology showcase, not an alpha claim.
+- **Return basis switch (PRICE / TOTAL)**: the header toggle selects the return
+  convention for analytics. PRICE chains raw closes (cash dividends appear as
+  ex-date price drops). TOTAL adds each cash dividend back on its ex-date —
+  `(close + div) / prevClose − 1`, the standard approximation to a
+  dividend-reinvested index — which is the honest view for high-yield names
+  (e.g. PFE's 2015→2026 CAGR moves from ~7% to ~13% when its ~4-6% yield is
+  counted). The basis propagates to risk statistics (vol, Sharpe, Sortino,
+  VaR/CVaR, beta, correlations, drawdowns), backtests and their benchmark, IC /
+  quintile forward returns, ML training targets, screener windows and the
+  equal-weight universe index. Candlesticks, Terminal price charts and factor
+  signals stay price-based (a candle cannot embed a cash payout; momentum-type
+  signals are classically price-based). The dividend calendar (1,400+ ex-dates
+  since 2015, bundled in `js/divs.js`) extends live as new ex-dates merge.
 - The universe is a static demonstration panel, not a tradable index.
 
 ## License

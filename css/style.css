@@ -528,7 +528,8 @@ main { flex: 1 1 auto; width: 100%; max-width: 1460px; margin: 0 auto; padding: 
   .hd-right { gap: 6px; }
   .hd-clock { display: none; }
   .hd-interval-wrap { display: none; }
-  #hd-interval { font-size: 10.5px; padding: 5px 22px 5px 8px; }
+  #hd-interval { display: none; }   /* free header room for the basis switch */
+  #hd-basis .seg-btn { font-size: 10px; padding: 4px 7px; }
   .live-badge { font-size: 9px; padding: 4px 8px; letter-spacing: 0.8px; }
   .hd-note { font-size: 11px; padding: 7px 12px; }
 }
