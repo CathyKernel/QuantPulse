@@ -1,0 +1,24 @@
+# AlphaForge — Netlify deployment config
+# The site is a fully static bundle: no build step, no functions, no backend.
+
+[build]
+  publish = "."
+  command = "echo 'Static bundle — nothing to build.'"
+
+[[headers]]
+  for = "/js/data.js"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# SPA-safe fallback: everything resolves from the root index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

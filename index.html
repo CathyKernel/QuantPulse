@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AlphaForge — a zero-dependency US equity quant research dashboard: candlesticks, factor analytics, in-browser backtesting and risk diagnostics on 11 years of real S&P 500 data.">
+  <meta name="theme-color" content="#0b0d24">
+  <title>AlphaForge · US Equity Quant Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='1' x2='1' y2='0'><stop offset='0' stop-color='%2322d3ee'/><stop offset='1' stop-color='%23a78bfa'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='%230b0d24'/><path d='M6 24 12 15 17 19 26 7' stroke='url(%23g)' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+  </div>
+
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- ================= HEADER ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="brandGrad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+          </linearGradient>
+        </defs>
+        <path d="M6 24 12 15 17 19 26 7" stroke="url(#brandGrad)" stroke-width="3"
+              fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">AlphaForge</span>
+        <span class="brand-sub">US equity quant dashboard</span>
+      </div>
+    </div>
+    <div id="market-strip" class="market-strip" aria-live="off"></div>
+  </header>
+
+  <!-- ================= TABS ================= -->
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button class="tab" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview">Overview</button>
+    <button class="tab" id="tab-charts" role="tab" aria-selected="false" aria-controls="panel-charts">Charts</button>
+    <button class="tab" id="tab-factors" role="tab" aria-selected="false" aria-controls="panel-factors">Factors</button>
+    <button class="tab" id="tab-backtest" role="tab" aria-selected="false" aria-controls="panel-backtest">Backtest</button>
+    <button class="tab" id="tab-risk" role="tab" aria-selected="false" aria-controls="panel-risk">Risk</button>
+  </nav>
+
+  <main id="main">
+
+    <!-- ================= OVERVIEW ================= -->
+    <section id="panel-overview" class="panel" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="stat-row" id="ov-stats"></div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Equal-weight universe index <span class="hint">38 mega-cap names · base 100</span></h2>
+          <div id="ov-benchmark" class="chart-md"></div>
+          <p class="card-note" id="ov-bench-note"></p>
+        </article>
+        <article class="card">
+          <h2>Trailing 1-year return <span class="hint">by ticker</span></h2>
+          <div id="ov-yearret" class="chart-md"></div>
+        </article>
+      </div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Sector map <span class="hint">11 GICS sectors</span></h2>
+          <div id="ov-sectors" class="sector-grid"></div>
+        </article>
+        <article class="card">
+          <h2>What is inside <span class="hint">the bundle</span></h2>
+          <ul class="feature-list">
+            <li><b>Candlestick terminal</b> — 3 years of daily OHLCV for every name, moving averages and volume, zero external libraries.</li>
+            <li><b>Factor analytics</b> — 7 classic cross-sectional factors with 11 years of monthly rank-IC history and hit rates.</li>
+            <li><b>In-browser backtesting</b> — pick a signal, rebalance monthly or quarterly, apply transaction costs; the engine runs locally on your device.</li>
+            <li><b>Risk lab</b> — rolling vol, Sharpe, VaR/CVaR, drawdowns, beta and a 38×38 correlation heatmap.</li>
+          </ul>
+          <p class="card-note">All numbers are computed client-side from bundled split-adjusted daily data. No accounts, no API keys, no tracking.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= CHARTS ================= -->
+    <section id="panel-charts" class="panel hidden" role="tabpanel" aria-labelledby="tab-charts">
+      <article class="card">
+        <div class="card-head">
+          <div class="controls">
+            <label for="c-ticker" class="visually-hidden">Ticker</label>
+            <select id="c-ticker" class="select"></select>
+            <div class="seg" id="c-range" role="group" aria-label="Time range">
+              <button data-v="6" class="seg-btn">6M</button>
+              <button data-v="12" class="seg-btn">1Y</button>
+              <button data-v="24" class="seg-btn active">2Y</button>
+              <button data-v="0" class="seg-btn">ALL</button>
+            </div>
+            <div class="seg" id="c-ma" role="group" aria-label="Moving averages">
+              <button data-v="20" class="seg-btn active">MA20</button>
+              <button data-v="50" class="seg-btn">MA50</button>
+              <button data-v="0" class="seg-btn">None</button>
+            </div>
+          </div>
+          <div class="quote" id="c-quote"></div>
+        </div>
+        <div id="c-candles" class="chart-lg"></div>
+      </article>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Snapshot <span class="hint" id="c-snap-name"></span></h2>
+          <div class="kv-table" id="c-snapshot"></div>
+        </article>
+        <article class="card">
+          <h2>Relative strength <span class="hint">vs equal-weight universe, 1Y</span></h2>
+          <div id="c-relative" class="chart-md"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= FACTORS ================= -->
+    <section id="panel-factors" class="panel hidden" role="tabpanel" aria-labelledby="tab-factors">
+      <div class="chips" id="f-chips" role="group" aria-label="Factor selection"></div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Current cross-section <span class="hint" id="f-rank-hint">top &amp; bottom 10 by score</span></h2>
+          <div id="f-ranks" class="chart-lg"></div>
+        </article>
+        <article class="card">
+          <h2>Score vs realized 1M return <span class="hint">latest cross-section</span></h2>
+          <div id="f-scatter" class="chart-lg"></div>
+          <p class="card-note">Each dot is one ticker: x = factor score today, y = return over the past 21 trading days. Downward-sloping clouds mark factors whose edge is mean-reversion.</p>
+        </article>
+      </div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Monthly rank IC <span class="hint" id="f-ic-hint"></span></h2>
+          <div id="f-ic-series" class="chart-md"></div>
+        </article>
+        <article class="card">
+          <h2>Factor scoreboard <span class="hint">11 years of monthly ICs</span></h2>
+          <div class="table-wrap">
+            <table class="data-table" id="f-summary">
+              <thead>
+                <tr><th>Factor</th><th>IC mean</th><th>IC IR</th><th>Hit rate</th><th>Months</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="card-note">On a 38-name mega-cap panel, cross-sectional edges are thin: classic 12-1 momentum has all but vanished over the last decade, while high-volatility names outperformed (negative low-vol IC). That is a real property of this universe — not a bug.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= BACKTEST ================= -->
+    <section id="panel-backtest" class="panel hidden" role="tabpanel" aria-labelledby="tab-backtest">
+      <article class="card">
+        <div class="card-head">
+          <h2>Strategy <span class="hint">runs entirely in your browser</span></h2>
+          <div class="controls">
+            <label for="b-strat" class="visually-hidden">Strategy</label>
+            <select id="b-strat" class="select"></select>
+            <div class="seg" id="b-topn" role="group" aria-label="Portfolio size">
+              <button data-v="5" class="seg-btn">Top 5</button>
+              <button data-v="10" class="seg-btn active">Top 10</button>
+              <button data-v="15" class="seg-btn">Top 15</button>
+              <button data-v="20" class="seg-btn">Top 20</button>
+            </div>
+            <div class="seg" id="b-rebal" role="group" aria-label="Rebalance frequency">
+              <button data-v="1" class="seg-btn active">Monthly</button>
+              <button data-v="3" class="seg-btn">Quarterly</button>
+            </div>
+            <div class="seg" id="b-cost" role="group" aria-label="Transaction cost">
+              <button data-v="0" class="seg-btn">0 bps</button>
+              <button data-v="10" class="seg-btn active">10 bps</button>
+              <button data-v="25" class="seg-btn">25 bps</button>
+            </div>
+          </div>
+        </div>
+        <div class="bt-metrics" id="b-metrics"></div>
+      </article>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Equity curve <span class="hint" id="b-eq-hint">net of costs, base 100</span></h2>
+          <div id="b-equity" class="chart-lg"></div>
+        </article>
+        <article class="card">
+          <h2>Drawdown <span class="hint">from running peak</span></h2>
+          <div id="b-drawdown" class="chart-lg"></div>
+        </article>
+      </div>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Monthly returns <span class="hint">strategy, % per month</span></h2>
+          <div id="b-monthly" class="chart-md"></div>
+        </article>
+        <article class="card">
+          <h2>Current holdings <span class="hint">latest rebalance, equal weight</span></h2>
+          <div class="table-wrap holdings-wrap">
+            <table class="data-table" id="b-holdings">
+              <thead><tr><th>#</th><th>Ticker</th><th>Company</th><th>Sector</th><th>Weight</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= RISK ================= -->
+    <section id="panel-risk" class="panel hidden" role="tabpanel" aria-labelledby="tab-risk">
+      <div class="stat-row" id="r-stats"></div>
+
+      <article class="card">
+        <h2>Correlation matrix <span class="hint">daily returns · past 2 years · grouped by sector</span></h2>
+        <div id="r-heatmap" class="chart-xl"></div>
+      </article>
+
+      <div class="grid-2">
+        <article class="card">
+          <h2>Risk / return map <span class="hint">annualized, full sample</span></h2>
+          <div id="r-scatter" class="chart-lg"></div>
+          <p class="card-note">x = annualized volatility, y = annualized return, colour = maximum drawdown. Upper-left names earned more per unit of pain.</p>
+        </article>
+        <article class="card">
+          <h2>Asset risk table <span class="hint">click a header to sort</span></h2>
+          <div class="table-wrap risk-table-wrap">
+            <table class="data-table" id="r-table">
+              <thead>
+                <tr>
+                  <th data-k="ticker">Ticker</th>
+                  <th data-k="vol">Vol</th>
+                  <th data-k="sharpe">Sharpe</th>
+                  <th data-k="maxdd">Max DD</th>
+                  <th data-k="var95">VaR 95</th>
+                  <th data-k="cvar95">CVaR 95</th>
+                  <th data-k="beta">Beta</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>AlphaForge · bundled data through <b id="ft-date"></b> · source: Yahoo Finance (split-adjusted)</span>
+    <span class="footer-disclaimer">For research and education only — not investment advice.</span>
+  </footer>
+
+  <div id="tooltip" class="tooltip hidden" role="tooltip"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
