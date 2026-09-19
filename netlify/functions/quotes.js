@@ -49,8 +49,9 @@ const RANGES = new Set(["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "ytd", "max
 const INTERVALS = new Set(["1d", "1h", "30m", "15m", "5m", "2m"]);
 
 /* --------------------------- module-level cache ------------------------- */
-const cache = new Map(); // key -> { at, payload }
-if (!globalThis.__qpQuoteCache) globalThis.__qpQuoteCache = cache;
+// Reuse one cache across warm invocations / module reloads when the runtime
+// keeps globalThis alive.
+const cache = globalThis.__qpQuoteCache || (globalThis.__qpQuoteCache = new Map());
 
 /* ------------------------------ helpers --------------------------------- */
 const json = (status, body, extraHeaders) => ({
@@ -113,19 +114,27 @@ function normalize(result, interval) {
   const meta = result.meta || {};
   const ts = result.timestamp || [];
   const q = (result.indicators && result.indicators.quote && result.indicators.quote[0]) || {};
-  const adj = (result.indicators && result.indicators.adjclose && result.indicators.adjclose[0]) || null;
   const n = ts.length;
   const intraday = interval !== "1d";
   const dates = new Array(n);
   const labels = new Array(n);
   const ohlcv = new Array(n);
+  // RAW (split-adjusted) OHLCV — deliberately NOT adjclose.
+  //
+  // The client chains appended bars onto its bundled snapshot, whose last
+  // bar is always on the raw basis (adj == raw at build time — Yahoo anchors
+  // the adjustment to the latest bar). Chaining raw closes therefore yields
+  // true daily returns even when an ex-dividend date passes between the
+  // snapshot build and the live merge. Using adjclose instead would inject
+  // a spurious −div% return into the first merged bar and a matching +div%
+  // into the ex-date bar of every new dividend event. Bars also stay
+  // internally consistent (no close < low) because o/h/l/c share one basis.
   for (let i = 0; i < n; i++) {
     dates[i] = etDate(ts[i]);
     labels[i] = intraday
       ? etDateTimeFmt.format(new Date(ts[i] * 1000)).replace(",", "")
       : dates[i];
-    const c = adj && adj[i] != null ? adj[i] : q.close[i];
-    ohlcv[i] = [q.open[i], q.high[i], q.low[i], c, q.volume[i]];
+    ohlcv[i] = [q.open[i], q.high[i], q.low[i], q.close[i], q.volume[i]];
   }
   const price = meta.regularMarketPrice != null ? meta.regularMarketPrice : (n ? q.close[n - 1] : null);
   const prevClose = meta.chartPreviousClose != null ? meta.chartPreviousClose

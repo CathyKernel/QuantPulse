@@ -172,7 +172,7 @@
       scheduleNext();
     }).catch(function (err) {
       S.errorCount++;
-      if (S.mode !== "snapshot") { S.mode = "snapshot"; emit("status", S.mode); }
+      if (S.mode !== "snapshot") { S.mode = "snapshot"; }
       emit("status", S.mode);
       scheduleNext(true);
     });
