@@ -509,6 +509,7 @@
 
   <footer class="footer">
     <span>QuantPulse · data through <b id="ft-date"></b> · source: Yahoo Finance (split-adjusted)</span>
+    <span id="ft-splits" class="ft-splits hidden"></span>
     <span class="footer-links"><a href="#" id="ft-methodology">Methodology</a></span>
     <span class="footer-disclaimer">For research and education only — not investment advice.</span>
   </footer>
@@ -530,6 +531,8 @@
         <p>The ML lab predicts cross-sectional next-month returns from nine z-scored features. Every month-end the selected model is retrained on the trailing window and asked to score the current cross-section; predictions, ICs and quintile spreads are strictly out-of-sample. Training rows whose 21-day label has not fully realised before the test date are embargoed (a purged walk-forward), features are winsorised and standardised within each cross-section, and a fixed random seed makes runs reproducible. Four models are implemented from scratch — ridge regression, elastic net, a one-hidden-layer neural network (Adam) and gradient-boosted histogram trees — plus an equal-weight ensemble. Feature importance is measured by permuting each feature out-of-sample over the last twelve test months. Heavy models train in a few seconds because the maths runs on flat Float32Array buffers with no allocations in the inner loops.</p>
         <h3>Live updates</h3>
         <p>Quotes refresh on the selected interval while the tab is visible; the endpoint alternates between <code>/api/quotes</code> and direct fallbacks. If the live feed is unreachable, the terminal degrades gracefully to the bundled snapshot — every module keeps working.</p>
+        <h3>Corporate actions — splits &amp; dividends</h3>
+        <p>The live feed carries Yahoo's split and dividend event calendar. When a split's ex-date falls after the snapshot date, the entire bundled history for that stock is rescaled to the new share basis (prices × denominator/numerator, volumes × numerator/denominator) before the merge — so a 10-for-1 split never contaminates returns, factors, backtests or risk stats with a fake −90% day, and split events that arrive after their bar has merged are repaired retroactively. Dividend ex-dates are deliberately left in the price chain (a price-return convention): the detector uses the dividend calendar to avoid mistaking an ex-dividend gap for a split. Boundary gaps that neither a split event nor a cash dividend explains are re-checked against a one-year event calendar before anything is adjusted — and when the evidence is inconclusive, QuantPulse warns and leaves the data untouched rather than guessing silently.</p>
       </div>
     </div>
   </div>

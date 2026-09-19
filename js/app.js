@@ -1660,6 +1660,61 @@
 
   /* ========================= live data wiring =========================== */
   var lastRenderAt = 0;
+  var splitEscalated = {};   // "SYM|date" -> true while in flight / resolved
+
+  function recordSplitFooter(s) {
+    var el = $("ft-splits");
+    if (!el) return;
+    if (el.textContent.indexOf(s.ticker + " " + s.ratio) >= 0) return;
+    var rec = s.ticker + " " + s.ratio + " (" + s.date.slice(5) + ")";
+    el.textContent = (el.textContent ? el.textContent + " · " : "splits adj: ") + rec;
+    el.classList.remove("hidden");
+  }
+  function onSplitApplied(split, extra) {
+    toast(split.ticker + " " + split.ratio + " split detected (ex-date " + split.date +
+      ") — history adjusted to new share basis" + (split.verified ? "" : " [unverified]"),
+      split.verified ? "ok" : "err");
+    console.info("[splits] adjusted:", split, extra || "");
+    recordSplitFooter(split);
+    // every derived number for this ticker changed — full re-render + ML reset
+    Object.keys(rendered).forEach(function (k) { rendered[k] = false; });
+    if (QP.ml) {
+      QP.ml.invalidate();
+      mlState.result = null;
+      mlState.compare = {};
+    }
+    rerenderActive();
+  }
+  // A boundary gap no split event or dividend explains → re-check against a
+  // 1-year event calendar before trusting any client-side guesswork.
+  function escalateSuspect(sus) {
+    var key = sus.ticker + "|" + sus.date;
+    if (splitEscalated[key]) return;
+    splitEscalated[key] = true;
+    live.fetchSeries(sus.ticker, "1y", "1d").then(
+      function (ser) {
+        var res = core.resolveSuspectedSplit(sus, ser, live.etTodayStr());
+        if (res.applied && res.split) onSplitApplied(res.split, "escalated: 1y event calendar");
+        else if (res.warning) {
+          toast(res.ticker + ": " + res.warning, "err");
+          console.warn("[splits]", res.ticker, res.warning, sus);
+        }
+        // silently resolved (ordinary move / dividend-explained): no action
+      },
+      function () {
+        // feed unavailable — last-resort client-side heuristic
+        var res = core.resolveSuspectedSplit(sus, null, live.etTodayStr());
+        if (res.applied && res.split) onSplitApplied(res.split, "escalated: heuristic (feed down)");
+        else if (res.warning) {
+          toast(res.ticker + ": " + res.warning, "err");
+          console.warn("[splits]", res.ticker, res.warning, sus);
+        } else {
+          delete splitEscalated[key];   // unresolved — retry on a later poll
+        }
+      }
+    );
+  }
+
   function onLiveQuotes(ev) {
     LV.quotes = ev.quotes;
     LV.updated = ev.fetchedAt;
@@ -1668,9 +1723,10 @@
       afterClose: live.todayBarCompleted(),
     });
     var hadNew = mergeRes.appended.length > 0;
+    var hadSplit = mergeRes.splits.length > 0;
     LV.forming = mergeRes.forming;
-    if (hadNew) {
-      LV.lastBars += mergeRes.appended.length;
+    if (hadNew || hadSplit) {
+      if (hadNew) LV.lastBars += mergeRes.appended.length;
       // everything derived changed: force re-render of every module on next visit
       Object.keys(rendered).forEach(function (k) { rendered[k] = false; });
       // ML caches are stale too — dataset and trained models must be rebuilt
@@ -1679,14 +1735,29 @@
         mlState.result = null;
         mlState.compare = {};
       }
+    }
+    if (hadNew) {
       toast("Live update: merged " + mergeRes.appended.join(", ") + " — analytics extended", "ok");
     }
+    if (hadSplit) {
+      var one = mergeRes.splits[0];
+      var unverified = mergeRes.splits.some(function (s) { return !s.verified; });
+      toast(mergeRes.splits.length === 1
+        ? one.ticker + " " + one.ratio + " split detected (ex-date " + one.date +
+          ") — history adjusted to new share basis" + (one.verified ? "" : " [unverified]")
+        : mergeRes.splits.length + " splits detected — history adjusted: " +
+          mergeRes.splits.map(function (s) { return s.ticker + " " + s.ratio; }).join(", "),
+        unverified ? "err" : "ok");
+      console.info("[splits] adjusted:", mergeRes.splits);
+      mergeRes.splits.forEach(recordSplitFooter);
+    }
+    (mergeRes.suspects || []).forEach(escalateSuspect);
     // throttle active-tab refresh to once per 1.5s
     var now = Date.now();
     if (now - lastRenderAt > 1500) {
       lastRenderAt = now;
       rerenderActive();
-    } else if (hadNew) {
+    } else if (hadNew || hadSplit) {
       setTimeout(function () {
         lastRenderAt = Date.now();
         rerenderActive();

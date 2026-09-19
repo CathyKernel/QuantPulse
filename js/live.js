@@ -150,7 +150,9 @@
       dates: q.dates || [],            // exchange-local dates
       labels: q.labels || q.dates || [], // display labels (datetime for intraday)
       ohlcv: q.ohlcv || [],            // aligned [o,h,l,c,v] (v raw shares)
-    };
+      splits: q.splits || [],          // corporate actions: [date, num, den]
+      dividends: q.dividends || [],    // [date, amount] — used by the
+    };                                 // ex-dividend-aware split detector
   }
 
   function poll() {
@@ -211,6 +213,8 @@
         ohlcv: q.ohlcv || [],
         price: q.price, previousClose: q.previousClose,
         marketTime: q.marketTime,
+        splits: q.splits || [],
+        dividends: q.dividends || [],
       };
       seriesCache.set(key, { at: Date.now(), data: data });
       return data;

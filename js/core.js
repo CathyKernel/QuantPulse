@@ -137,15 +137,379 @@
 
   var DAYS = function () { return D.dates.length; };
 
+  /* ================= corporate actions: split detection ================= */
+  /* Ex-dividend-aware split detection at the live-merge boundary.
+
+     Why: the bundled snapshot is frozen on the share basis of its build
+     date, while every live bar arrives on the CURRENT basis. When a stock
+     splits between the two, the raw chain shows a fake ±ratio% return at
+     the boundary (e.g. −50% for a 2:1) that would poison returns, factors,
+     backtests and risk stats. Cash dividends, by contrast, are *real*
+     price returns under the documented raw-chain convention and must NOT
+     be "corrected" — but their ex-date gaps look split-like, so the
+     detector factors them out before judging a gap.
+
+     Layers (per ticker, every merge):
+       1. AUTHORITATIVE — Yahoo split events newer than the snapshot are
+          applied directly: history is rescaled to the new basis (prices ×
+          den/num, volumes × num/den) so the boundary return is continuous.
+          Events dated ON the last merged bar are cross-checked against that
+          bar's realised return: a split-like jump means the event arrived
+          late (bar merged undetected) → repair everything except that bar;
+          a normal return means the bundle already reflects it → no-op.
+       2. SUSPECT — boundary gaps beyond ±20% that no split event and no
+          cash dividend explains are handed to the caller for escalation
+          (it re-fetches a 1y window whose event calendar is wider).
+       3. RESOLUTION — with the 1y events: apply if a split is on record;
+          warn (never silently adjust) if prices look like a split but no
+          event backs it. Without any feed (API down): a strict client-side
+          heuristic (clean ratio on open AND close + corroborating share
+          volume, short span only) may apply an *unverified* adjustment.
+
+     Idempotency: a per-ticker registry of applied events plus the fact
+     that a rescaled boundary no longer gaps keep repeated polls safe.   */
+
+  var HEUR_RATIOS = [2, 2.5, 3, 4, 5, 6, 7, 8, 10, 15, 20]; // split multiples
+  var HEUR_TOL = 0.05;        // relative tolerance, open & close ratio match
+  var HEUR_VOL_BAND = [0.3, 4.0]; // volume ratio vs expected num/den
+  var GAP_SUSPECT = 0.20;     // |boundary gap| beyond this → investigate
+  var DIV_EXPLAINS_TOL = 0.05; // residual after dividend factored out
+  var WARN_GAP = 0.35;        // unexplained gap beyond this → user warning
+  var EVENT_MISMATCH = 0.10;  // event ratio vs observed gap tolerance
+  var LATE_RET_TOL = 0.08;    // last-bar return vs event ratio tolerance
+
+  var SPLIT_APPLIED = {};     // tk -> [{date, ratio, mode}] registry
+  var SPLIT_LOG = [];         // applied splits (reporting/UI)
+
+  function round4(x) { return Math.round(x * 1e4) / 1e4; }
+  function calDaysBetween(a, b) {
+    return Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+  }
+  // cash dividends with date in (afterDate, uptoDate]
+  function dividendSum(dividends, afterDate, uptoDate) {
+    var s = 0;
+    if (!dividends) return 0;
+    for (var i = 0; i < dividends.length; i++) {
+      var d = dividends[i][0];
+      if (d > afterDate && d <= uptoDate && dividends[i][1] > 0) s += dividends[i][1];
+    }
+    return s;
+  }
+  // first payload bar after the snapshot (completed or forming)
+  function firstNewBar(q, lastDate) {
+    if (!q || !q.dates || !q.ohlcv) return null;
+    for (var i = 0; i < q.dates.length; i++) {
+      if (q.dates[i] > lastDate) {
+        var b = q.ohlcv[i];
+        return { date: q.dates[i], o: b ? b[0] : null, c: b ? b[3] : null, v: b ? b[4] : null };
+      }
+    }
+    return null;
+  }
+  function avgRecentVolumeK(tk, nBars) {
+    var cd = D.candles[tk];
+    if (!cd || !cd.length) return null;
+    var M = cd.length / 5, vals = [];
+    for (var b = Math.max(0, M - nBars); b < M; b++) {
+      var v = cd[b * 5 + 4];
+      if (v != null) vals.push(v);
+    }
+    return vals.length ? mean(vals) : null; // thousands of shares
+  }
+  // observed price ratio (dividend-factored) → split params, or null
+  function matchHeurRatio(x) {
+    for (var i = 0; i < HEUR_RATIOS.length; i++) {
+      var R = HEUR_RATIOS[i];
+      if (Math.abs(x - 1 / R) / (1 / R) <= HEUR_TOL) return { num: R, den: 1, priceFactor: 1 / R };
+      if (Math.abs(x - R) / R <= HEUR_TOL) return { num: 1, den: R, priceFactor: R }; // reverse
+    }
+    return null;
+  }
+  function ratioLabel(num, den) {
+    function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+    var g = gcd(Math.round(num), Math.round(den)) || 1;
+    return (Math.round(num) / g) + ":" + (Math.round(den) / g);
+  }
+  // Rescale bundled history for tk to a new share basis. Bars dated ON or
+  // AFTER the split ex-date (cutIdx / cutCandleIdx) already carry the new
+  // basis — live bars arrive post-split and the ex-date bar itself opened on
+  // the new basis — so only the earlier history is rescaled. cut == null →
+  // ex-date is still in the future → rescale everything.
+  function rescaleHistory(tk, priceFactor, volFactor, cutIdx, cutCandleIdx) {
+    var cl = D.close[tk];
+    var stopClose = cutIdx != null ? cutIdx : cl.length;
+    for (var i = 0; i < stopClose; i++) if (cl[i] != null) cl[i] = round4(cl[i] * priceFactor);
+    var cd = D.candles[tk];
+    if (cd && cd.length) {
+      var M = cd.length / 5, stopBar = cutCandleIdx != null ? cutCandleIdx : M;
+      for (var b = 0; b < stopBar; b++) {
+        for (var j = 0; j < 4; j++) {
+          var ci = b * 5 + j;
+          if (cd[ci] != null) cd[ci] = round4(cd[ci] * priceFactor);
+        }
+        var vi = b * 5 + 4;
+        if (cd[vi] != null) cd[vi] = Math.round(cd[vi] * volFactor);
+      }
+    }
+  }
+  function registerSplit(tk, date, ratio, mode) {
+    (SPLIT_APPLIED[tk] = SPLIT_APPLIED[tk] || []).push({ date: date, ratio: ratio, mode: mode });
+  }
+  function applySplit(tk, info) {
+    // info: {date, num, den, source, verified, repair}
+    if (!(info.num > 0) || !(info.den > 0)) return null;
+    var priceFactor = info.den / info.num;
+    if (!isFinite(priceFactor) || priceFactor < 0.02 || priceFactor > 50) return null;
+    var cutIdx = S.dateIdx ? S.dateIdx[info.date] : null;          // ex-date in history?
+    var cutCandle = S.candleIdx ? S.candleIdx[info.date] : null;
+    rescaleHistory(tk, priceFactor, info.num / info.den, cutIdx, cutCandle);
+    var rec = {
+      ticker: tk, date: info.date, ratio: ratioLabel(info.num, info.den),
+      priceFactor: priceFactor, source: info.source, verified: !!info.verified,
+      repair: !!info.repair,
+    };
+    registerSplit(tk, info.date, rec.ratio, info.source + (info.repair ? "-repair" : ""));
+    SPLIT_LOG.push(rec);
+    return rec;
+  }
+  // Post-application hygiene for the async escalation path: refresh every
+  // derived matrix, and when the split ex-date already sits inside history
+  // (repair), re-chain the equal-weight benchmark from that day onward.
+  function finalizeSplitApplication() {
+    var repaired = SPLIT_LOG[SPLIT_LOG.length - 1];
+    var exIdx = repaired ? S.dateIdx[repaired.date] : null;
+    rebuildDerived();
+    if (exIdx != null) {
+      rebuildBenchmarkFrom(exIdx);
+      rebuildDerived();
+    }
+  }
+  function inRegistry(tk, date, ratio) {
+    return (SPLIT_APPLIED[tk] || []).some(function (a) { return a.date === date && a.ratio === ratio; });
+  }
+
+  /* Authoritative event handling. Accepts:
+       events       [[date, num, den], ...] from the payload
+       gapSource    quote/series object for boundary validation
+       maxDate      acceptance cutoff for future-dated events (ET today)
+     Returns {status: "apply"|"unconfirmed"|"none", rec?, lateIdx?} */
+  function handleEventSplits(tk, events, gapSource, lastDate, dividends, maxDate) {
+    var sorted = (events || []).slice().sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
+    var out = { status: "none", rec: null, repairFromIdx: null };
+    var lastIdx = D.dates.length - 1;
+    for (var e = 0; e < sorted.length; e++) {
+      var d = sorted[e][0], num = +sorted[e][1], den = +sorted[e][2];
+      if (!(num > 0) || !(den > 0)) continue;
+      var label = ratioLabel(num, den);
+      if (inRegistry(tk, d, label)) continue;     // already handled
+      if (d > maxDate) continue;                  // not effective yet
+      var priceFactor = den / num;
+      if (!isFinite(priceFactor) || priceFactor < 0.02 || priceFactor > 50) continue;
+
+      if (d <= lastDate) {
+        // Event dated INSIDE the merged history: either its bar merged before
+        // the event propagated (late arrival → repair everything strictly
+        // BEFORE the ex-date, re-chain the benchmark) or the basis is already
+        // continuous (bundle built post-split → no-op, mark seen).
+        var exIdx = S.dateIdx ? S.dateIdx[d] : null;
+        if (exIdx == null || exIdx < 1) continue;      // ex-date bar not merged yet
+        var c1 = D.close[tk][exIdx], c0 = D.close[tk][exIdx - 1];
+        var ret = c0 != null && c1 != null ? c1 / c0 - 1 : null;
+        var divAdj = Math.max(0.05, 1 - dividendSum(dividends, D.dates[exIdx - 1], d) / (c0 || 1));
+        if (ret != null && Math.abs((1 + ret) / (priceFactor * divAdj) - 1) <= LATE_RET_TOL) {
+          var rec = applySplit(tk, { date: d, num: num, den: den, source: "event", verified: true, repair: true });
+          if (rec) {
+            out.status = "apply"; out.rec = rec; out.repairFromIdx = exIdx;
+            console.warn("[splits] " + tk + " " + rec.ratio + " event arrived after its bar merged — history repaired");
+          }
+        } else {
+          registerSplit(tk, d, label, "reflected"); // already continuous; mark seen
+        }
+        continue;
+      }
+
+      // d > lastDate: split effective after the snapshot — apply, validating
+      // against the boundary gap when one is visible.
+      var info = { date: d, num: num, den: den, source: "event", verified: true };
+      var gap = firstNewBar(gapSource, lastDate);
+      var prevClose = D.close[tk][lastIdx];
+      if (!gap || gap.c == null || !(prevClose > 0)) {
+        var rec2 = applySplit(tk, info);          // deferred validation
+        if (rec2) { out.status = "apply"; out.rec = rec2; }
+        continue;
+      }
+      var divSum = dividendSum(dividends, lastDate, gap.date);
+      var expected = priceFactor * Math.max(0.05, 1 - divSum / prevClose);
+      var closeMismatch = Math.abs(gap.c / prevClose / expected - 1);
+      if (closeMismatch <= EVENT_MISMATCH) {
+        var rec3 = applySplit(tk, info);
+        if (rec3) { out.status = "apply"; out.rec = rec3; }
+        continue;
+      }
+      // close deviates — a same-day market move? let the OPEN corroborate
+      if (gap.o != null && Math.abs(gap.o / prevClose / expected - 1) <= EVENT_MISMATCH * 1.5) {
+        info.verified = false;
+        var rec4 = applySplit(tk, info);
+        if (rec4) {
+          out.status = "apply"; out.rec = rec4;
+          console.warn("[splits] " + tk + " " + label + " applied — close deviates " +
+            (closeMismatch * 100).toFixed(1) + "% from the clean ratio (market move?)");
+        }
+        continue;
+      }
+      console.warn("[splits] " + tk + " split event " + label + " not confirmed by prices (gap off " +
+        (closeMismatch * 100).toFixed(0) + "%) — not adjusted");
+      out.status = "unconfirmed";
+      out.ratio = label;
+    }
+    return out;
+  }
+
+  /* Merge-time scan: authoritative events + boundary-gap suspects. */
+  function detectSplits(quotes, etInfo) {
+    var report = { splits: [], suspects: [], benchmarkRebuildFrom: null };
+    var lastDate = D.dates[D.dates.length - 1];
+    var lastIdx = D.dates.length - 1;
+    TICKERS.forEach(function (tk) {
+      var q = quotes[tk];
+      if (!q) return;
+      var prevClose = D.close[tk][lastIdx];
+      if (!(prevClose > 0)) return;
+
+      var ev = handleEventSplits(tk, q.splits, q, lastDate, q.dividends, etInfo.todayStr);
+      if (ev.status === "apply" && ev.rec) {
+        report.splits.push(ev.rec);
+        if (ev.repairFromIdx != null && report.benchmarkRebuildFrom == null) report.benchmarkRebuildFrom = ev.repairFromIdx;
+        return;
+      }
+      if (ev.status === "unconfirmed") {
+        report.suspects.push({ ticker: tk, date: lastDate, unconfirmedEvent: ev.ratio });
+        return;
+      }
+
+      // boundary gap analysis (no split event claims the gap)
+      var gap = firstNewBar(q, lastDate);
+      if (!gap || gap.c == null) return;
+      var observed = gap.c / prevClose;
+      if (Math.abs(observed - 1) < GAP_SUSPECT) return;   // ordinary move
+      var divSum = dividendSum(q.dividends, lastDate, gap.date);
+      var divFactor = Math.max(0.05, 1 - divSum / prevClose);
+      if (Math.abs(observed / divFactor - 1) < DIV_EXPLAINS_TOL) return; // ex-div drop — expected
+      report.suspects.push({
+        ticker: tk, date: gap.date, prevClose: prevClose,
+        newClose: gap.c, newOpen: gap.o, newVolume: gap.v,
+        observed: observed, divSum: divSum,
+        spanDays: calDaysBetween(lastDate, gap.date),
+      });
+    });
+    return report;
+  }
+
+  /* Escalation resolver: re-checks a suspect against a 1-year window
+     (series = {splits, dividends, ...} from the wider fetch). Pass
+     series = null when the feed is unavailable → strict client-side
+     heuristic as the last resort. */
+  function resolveSuspectedSplit(sus, series, todayStr) {
+    var tk = sus.ticker;
+    var lastDate = D.dates[D.dates.length - 1];
+    var lastIdx = D.dates.length - 1;
+    var prevClose = D.close[tk][lastIdx];
+    var out = { applied: false, ticker: tk, split: null, warning: null };
+    if (!(prevClose > 0)) return out;
+
+    if (series) {
+      var ev = handleEventSplits(tk, series.splits, series, lastDate, series.dividends, todayStr);
+      if (ev.status === "apply" && ev.rec) {
+        finalizeSplitApplication();
+        out.applied = true; out.split = ev.rec;
+        return out;
+      }
+      if (ev.status === "unconfirmed") {
+        out.warning = "split event " + ev.ratio + " on record but not confirmed by prices — history NOT adjusted";
+        return out;
+      }
+    }
+
+    // re-check the dividend explanation with the wider window
+    var divSum = series ? dividendSum(series.dividends, lastDate, sus.date) : (sus.divSum || 0);
+    var divFactor = Math.max(0.05, 1 - divSum / prevClose);
+    var splitOnly = (sus.observed != null ? sus.observed : (sus.newClose / sus.prevClose)) / divFactor;
+    if (Math.abs(splitOnly - 1) < DIV_EXPLAINS_TOL) return out;  // dividend explains it
+
+    if (sus.unconfirmedEvent) {
+      out.warning = "split event " + sus.unconfirmedEvent + " unconfirmed — history NOT adjusted, verify manually";
+      return out;
+    }
+
+    var m = matchHeurRatio(splitOnly);
+    if (m && (sus.spanDays == null || sus.spanDays <= 15)) {
+      var openOK = sus.newOpen != null && Math.abs(sus.newOpen / sus.prevClose / m.priceFactor - 1) <= HEUR_TOL;
+      var volOK = false;
+      if (sus.newVolume != null && sus.newVolume > 0) {
+        var avgV = avgRecentVolumeK(tk, 5);
+        if (avgV > 0) {
+          var vr = (sus.newVolume / 1000) / avgV;      // new bar vs bundled basis
+          var expectV = 1 / m.priceFactor;             // ≈ num/den
+          volOK = vr >= expectV * HEUR_VOL_BAND[0] && vr <= expectV * HEUR_VOL_BAND[1];
+        }
+      }
+      if (!series && openOK && volOK) {
+        // feed unavailable but evidence is strong — apply, clearly unverified
+        var rec = applySplit(tk, {
+          date: sus.date, num: m.num, den: m.den,
+          source: "heuristic", verified: false,
+        });
+        if (rec) {
+          finalizeSplitApplication();
+          out.applied = true; out.split = rec;
+          console.warn("[splits] " + tk + " " + rec.ratio + " applied by unverified heuristic (feed unavailable) — verify manually");
+          return out;
+        }
+      }
+      if (m && (series || !openOK || !volOK)) {
+        out.warning = "price gap matches a " + ratioLabel(m.num, m.den) +
+          " split but " + (series ? "no split event is on record" : "evidence is inconclusive") +
+          " — history NOT adjusted, verify manually";
+        return out;
+      }
+    }
+    var rawGap = (sus.observed != null ? sus.observed : sus.newClose / sus.prevClose) - 1;
+    if (Math.abs(rawGap) > WARN_GAP) {
+      out.warning = (rawGap > 0 ? "+" : "") + (rawGap * 100).toFixed(1) +
+        "% price gap unexplained by any split or dividend — check data";
+    }
+    return out;
+  }
+
+  // rebuild the equal-weight benchmark from a day index onward (used after
+  // a late split repair changes historical returns)
+  function rebuildBenchmarkFrom(dayIdx) {
+    for (var i = Math.max(1, dayIdx); i < D.dates.length; i++) {
+      var rets = S.rets[i] || [], vals = [];
+      for (var t = 0; t < N; t++) if (rets[t] != null) vals.push(rets[t]);
+      var mr = mean(vals);
+      D.benchmark[i] = D.benchmark[i - 1] * (mr != null ? 1 + mr : 1);
+    }
+  }
+
   /* ============================ live merge ============================= */
-  /* quotes: { SYM: {price, prevClose, ..., dates: [...], ohlcv: [[o,h,l,c,v], ...]} }
-     Returns { appended: [dates], forming: {SYM: {o,h,l,c,v,date}} }              */
+  /* quotes: { SYM: {price, prevClose, ..., dates: [...], ohlcv: [[o,h,l,c,v], ...],
+                     splits: [[d,num,den],...], dividends: [[d,amount],...]} }
+     Returns { appended: [dates], forming: {SYM: {o,h,l,c,v,date}},
+               splits: [applied split records],
+               suspects: [gaps needing escalation],
+               benchmarkRebuildFrom: dayIdx|null }                            */
   function mergeLiveQuotes(quotes, etInfo) {
     var etToday = etInfo.todayStr;
     var afterClose = etInfo.afterClose;
     var lastDate = D.dates[D.dates.length - 1];
     var appended = [];
     var forming = {};
+
+    // 0) ex-dividend-aware split detection: rescale any ticker whose share
+    //    basis changed after the snapshot BEFORE returns are chained, so the
+    //    merge below computes continuous returns on the new basis.
+    var splitReport = detectSplits(quotes, etInfo);
 
     // 1) collect candidate completed bars (dates after the bundled snapshot)
     var cand = {}; // date -> {SYM: bar}
@@ -208,8 +572,21 @@
       });
     }
 
-    if (appended.length) rebuildDerived();
-    return { appended: appended, forming: forming };
+    if (appended.length || splitReport.splits.length) {
+      rebuildDerived();
+      // a late split repair rewrites a realised historical return — the
+      // equal-weight benchmark must be re-chained from that day onward
+      if (splitReport.benchmarkRebuildFrom != null) {
+        rebuildBenchmarkFrom(splitReport.benchmarkRebuildFrom);
+        rebuildDerived();
+      }
+    }
+    return {
+      appended: appended,
+      forming: forming,
+      splits: splitReport.splits,
+      suspects: splitReport.suspects,
+    };
   }
 
   /* ============================ factors ================================ */
@@ -752,6 +1129,7 @@
     FACTOR_FNS: FACTOR_FNS, composite: compositeScores, scoresFor: scoresFor,
     state: S, DAYS: DAYS,
     mergeLiveQuotes: mergeLiveQuotes, rebuildDerived: rebuildDerived,
+    resolveSuspectedSplit: resolveSuspectedSplit, splitLog: function () { return SPLIT_LOG.slice(); },
     icData: icData, quintileSpread: quintileSpread, factorCorrMatrix: factorCorrMatrix,
     runBacktest: runBacktest, perfMetrics: perfMetrics, assetRisk: assetRisk,
     corrMatrix: corrMatrix, rollingVolSeries: rollingVolSeries, underwaterSeries: underwaterSeries,

@@ -18,6 +18,8 @@
          marketTime,                                      // epoch s of last trade
          dates:  ["2026-09-14", ...],                     // exchange-local dates
          ohlcv:  [[o, h, l, c, v], ...]                   // v = RAW shares
+         splits:    [["2026-09-14", num, den], ...],      // split events in range
+         dividends: [["2026-09-14", amount], ...]         // cash divs in range
        }, ...
      },
      failed: ["TICKER", ...]                              // symbols that errored
@@ -26,6 +28,12 @@
    Notes
    - Volume is returned in RAW shares; the client converts to the
      thousands unit used by the bundled data store.
+   - Corporate-action events (splits / cash dividends) inside the
+     requested range are passed through as exchange-local-dated arrays.
+     Splits are [date, numerator, denominator] — a 10:1 split is
+     [date, 10, 1], i.e. price × (den/num) on the ex-date. The client
+     uses them for ex-dividend-aware split detection at the merge
+     boundary (see js/core.js).
    - A 20-second in-memory cache per (symbols|range|interval) key keeps
      upstream request volume low when several clients poll at once.
    - Runs on the Netlify Functions runtime (Node 18+, native fetch).
@@ -86,7 +94,7 @@ function etDate(epochSec) {
 }
 
 async function fetchChart(symbol, range, interval) {
-  const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
+  const path = `/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&events=div%7Csplit&includePrePost=false`;
   let lastErr = null;
   for (const base of UPSTREAMS) {
     const ctrl = new AbortController();
@@ -136,6 +144,28 @@ function normalize(result, interval) {
       : dates[i];
     ohlcv[i] = [q.open[i], q.high[i], q.low[i], q.close[i], q.volume[i]];
   }
+  // Corporate-action events within the range → compact ET-dated arrays.
+  // Yahoo shape: events.splits[ts] = {date, numerator, denominator, splitRatio}
+  //             events.dividends[ts] = {date, amount}   (date = epoch s)
+  const ev = result.events || {};
+  const splits = [];
+  if (ev.splits) {
+    Object.keys(ev.splits).map(Number).sort((a, b) => a - b).forEach((ts) => {
+      const s = ev.splits[ts];
+      const num = +s.numerator, den = +s.denominator;
+      if (num > 0 && den > 0 && isFinite(num) && isFinite(den)) {
+        splits.push([etDate(+s.date || ts), num, den]);
+      }
+    });
+  }
+  const dividends = [];
+  if (ev.dividends) {
+    Object.keys(ev.dividends).map(Number).sort((a, b) => a - b).forEach((ts) => {
+      const d = ev.dividends[ts];
+      const amt = +d.amount;
+      if (amt > 0 && isFinite(amt)) dividends.push([etDate(+d.date || ts), amt]);
+    });
+  }
   const price = meta.regularMarketPrice != null ? meta.regularMarketPrice : (n ? q.close[n - 1] : null);
   const prevClose = meta.chartPreviousClose != null ? meta.chartPreviousClose
     : n > 1 ? q.close[n - 2] : null;
@@ -154,6 +184,8 @@ function normalize(result, interval) {
     dates,
     labels,
     ohlcv,
+    splits,
+    dividends,
   };
 }
 

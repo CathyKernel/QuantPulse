@@ -73,6 +73,18 @@ quantpulse/
   bundle are stored in thousands.
 - Live merge rule: a bar dated today counts as completed only after 16:05 ET;
   earlier it is a forming overlay excluded from all analytics.
+- **Ex-dividend-aware split detection**: the live feed carries Yahoo's split &
+  dividend event calendar. When a split's ex-date falls after the snapshot,
+  the ticker's entire bundled history is rescaled to the new share basis
+  (prices × den/num, volumes × num/den) *before* returns are chained — a 10:1
+  split never shows up as a fake −90% day, and split events that arrive after
+  their bar has merged are repaired retroactively (including the equal-weight
+  benchmark re-chain). Dividend ex-dates stay in the price chain (price-return
+  convention) and are used to avoid mistaking an ex-div gap for a split;
+  unexplained boundary gaps are re-checked against a 1-year event calendar,
+  and when evidence is inconclusive the app **warns instead of guessing**.
+  Only if the feed is down entirely can a strict open+close+volume heuristic
+  apply an adjustment — always flagged `[unverified]`.
 - Factors are computed client-side from the merged history (momentum 12-1/6M,
   1M reversal, 20D low vol, RSI-14 Cutler variant negated, 52W-high proximity,
   20/120D volume trend). Rank IC = Spearman ρ between month-end scores and the
