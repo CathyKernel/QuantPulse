@@ -371,6 +371,22 @@ main { flex: 1 1 auto; width: 100%; max-width: 1460px; margin: 0 auto; padding: 
 .data-table th:first-child, .data-table td:first-child { text-align: left; padding-left: 14px; }
 .data-table th[data-k] { cursor: pointer; }
 .data-table th[data-k]:hover { color: var(--teal); }
+/* sort direction markers on sortable headers */
+.data-table th.sort-asc, .data-table th.sort-desc { color: var(--teal); }
+.data-table th.sort-asc::after { content: " ▴"; font-size: 9px; }
+.data-table th.sort-desc::after { content: " ▾"; font-size: 9px; }
+
+/* amber dividend-uplift chip under CAGR / Sharpe values (risk table) */
+.delta-chip {
+  display: block;
+  margin-top: 1px;
+  font-size: 9.5px;
+  line-height: 1.25;
+  letter-spacing: 0.2px;
+  color: var(--warn);
+  opacity: 0.85;
+}
+.delta-chip:hover { opacity: 1; }
 .data-table td {
   padding: 7px 10px; text-align: right; white-space: nowrap;
   border-bottom: 1px solid rgba(255,255,255,0.035);

@@ -117,6 +117,14 @@ quantpulse/
   signals stay price-based (a candle cannot embed a cash payout; momentum-type
   signals are classically price-based). The dividend calendar (1,400+ ex-dates
   since 2015, bundled in `js/divs.js`) extends live as new ex-dates merge.
+- **Dividend-uplift chips & sortable tables**: the risk table's CAGR and Sharpe
+  cells carry an amber chip with the full-sample dividend uplift
+  (TOTAL − PRICE, e.g. PFE `+6.3pp` CAGR / `+0.24` Sharpe), so toggling the
+  basis makes the change visible without memorising both views — sort by
+  **Div yld** (PFE / AMT / DUK surface on top) and switch TOTAL to compare
+  high-yield names at a glance. The screener gained a trailing-12-month
+  **Div yld** column (sortable, ≥3% highlighted), and both tables now show a
+  sort-direction arrow plus `aria-sort` on the active column header.
 - The universe is a static demonstration panel, not a tradable index.
 
 ## License

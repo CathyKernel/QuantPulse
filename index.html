@@ -199,7 +199,7 @@
             </select>
           </div>
         </div>
-        <p class="card-note">Click any row to open it in the Terminal. Day change and price are live when the feed is connected; returns, volatility, RSI and volume ratios are computed from the merged daily history.</p>
+        <p class="card-note">Click any row to open it in the Terminal. Day change and price are live when the feed is connected; returns, volatility, RSI and volume ratios are computed from the merged daily history. Div yld is the trailing 12-month cash dividend over the last close and stays visible under both return bases.</p>
         <div class="table-wrap scr-wrap">
           <table class="data-table scr-table" id="scr-table">
             <thead>
@@ -214,6 +214,7 @@
                 <th data-k="m3">3M</th>
                 <th data-k="ytd">YTD</th>
                 <th data-k="y1">1Y</th>
+                <th data-k="yld" title="Trailing 12-month cash dividend / last close">Div yld</th>
                 <th data-k="vol">Vol</th>
                 <th data-k="rsi">RSI</th>
                 <th data-k="off52">vs 52W-H</th>
@@ -474,13 +475,13 @@
                 <tr>
                   <th data-k="ticker">Ticker</th>
                   <th data-k="vol">Vol</th>
-                  <th data-k="sharpe">Sharpe</th>
+                  <th data-k="sharpe" title="Sharpe ratio (rf = 0); the amber chip is the dividend uplift TOTAL − PRICE">Sharpe</th>
                   <th data-k="sortino">Sortino</th>
                   <th data-k="maxdd">Max DD</th>
                   <th data-k="var95">VaR 95</th>
                   <th data-k="cvar95">CVaR 95</th>
                   <th data-k="beta">Beta</th>
-                  <th data-k="cagr">CAGR</th>
+                  <th data-k="cagr" title="Compound annual growth rate; the amber chip is the dividend uplift TOTAL − PRICE">CAGR</th>
                   <th data-k="yld" title="Trailing 12-month cash dividend / last close">Div yld</th>
                 </tr>
               </thead>
@@ -539,7 +540,7 @@
         <h3>Corporate actions — splits &amp; dividends</h3>
         <p>The live feed carries Yahoo's split and dividend event calendar. When a split's ex-date falls after the snapshot date, the entire bundled history for that stock is rescaled to the new share basis (prices × denominator/numerator, volumes × numerator/denominator) before the merge — so a 10-for-1 split never contaminates returns, factors, backtests or risk stats with a fake −90% day, and split events that arrive after their bar has merged are repaired retroactively. The split detector factors cash dividends out of boundary gaps before judging them, so an ex-dividend drop is never mistaken for a split. Boundary gaps that neither a split event nor a cash dividend explains are re-checked against a one-year event calendar before anything is adjusted — and when the evidence is inconclusive, QuantPulse warns and leaves the data untouched rather than guessing silently.</p>
         <h3>Return basis — price vs total return</h3>
-        <p>The header's PRICE / TOTAL switch selects the return convention for analytics. PRICE chains raw closes, so cash dividends appear as ex-date price drops — the honest choice when comparing price charts. TOTAL adds each cash dividend back on its ex-date ((close + dividend) / previous close − 1), the standard approximation to a dividend-reinvested index — the honest choice for high-yield names, where price return understates realized performance year after year. The basis propagates to risk statistics (vol, Sharpe, Sortino, VaR/CVaR, beta, correlations, drawdowns), backtests and their benchmark, IC and quintile forward returns, ML training targets, screener windows and the universe index. Candlesticks, the Terminal's price charts and factor signals themselves stay price-based — a candle cannot embed a cash payout, and momentum-type signals are classically price-based. The dividend calendar (1,400+ ex-dates since 2015) ships with the bundle and extends live as new ex-dates merge. Day-change percentages on quote screens remain price-based by convention.</p>
+        <p>The header's PRICE / TOTAL switch selects the return convention for analytics. PRICE chains raw closes, so cash dividends appear as ex-date price drops — the honest choice when comparing price charts. TOTAL adds each cash dividend back on its ex-date ((close + dividend) / previous close − 1), the standard approximation to a dividend-reinvested index — the honest choice for high-yield names, where price return understates realized performance year after year. The basis propagates to risk statistics (vol, Sharpe, Sortino, VaR/CVaR, beta, correlations, drawdowns), backtests and their benchmark, IC and quintile forward returns, ML training targets, screener windows and the universe index. Candlesticks, the Terminal's price charts and factor signals themselves stay price-based — a candle cannot embed a cash payout, and momentum-type signals are classically price-based. The dividend calendar (1,400+ ex-dates since 2015) ships with the bundle and extends live as new ex-dates merge. Day-change percentages on quote screens remain price-based by convention. To make the basis switch concrete, the risk table's CAGR and Sharpe cells carry an amber chip with the dividend uplift (total minus price basis, full sample) — sort the table by Div yld and toggle TOTAL to see high-yield names like PFE, DUK or AMT gain several points of CAGR per year, while the screener's Div yld column ranks the same names without switching views.</p>
       </div>
     </div>
   </div>

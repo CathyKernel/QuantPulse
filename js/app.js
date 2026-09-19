@@ -683,6 +683,20 @@
   /* ============================ SCREENER =============================== */
   var scrState = { sortKey: "day", desc: true, search: "", sector: "" };
 
+  // reflect the active sort column/direction on a table's headers: an arrow
+  // glyph on the sorted column + aria-sort for screen readers
+  function updateSortMarks(tableId, state) {
+    Array.prototype.forEach.call($(tableId).querySelectorAll("th[data-k]"), function (th) {
+      th.classList.remove("sort-desc", "sort-asc");   // clear both, then set one
+      if (th.getAttribute("data-k") === state.sortKey) {
+        th.classList.add(state.desc ? "sort-desc" : "sort-asc");
+        th.setAttribute("aria-sort", state.desc ? "descending" : "ascending");
+      } else {
+        th.removeAttribute("aria-sort");
+      }
+    });
+  }
+
   function screenerRows() {
     var rows = [];
     for (var t = 0; t < N; t++) {
@@ -711,6 +725,7 @@
         day: dayChangePct(tk),
         w1: retOver(tk, 5), m1: retOver(tk, 21), m3: retOver(tk, 63),
         ytd: ytdReturn(tk), y1: retOver(tk, 252),
+        yld: core.trailingDivYield(tk),
         vol: core.rollingVolAt(DAYS() - 1, 20, t),
         rsi: core.rsiCutlerAt(DAYS() - 1, 14, t),
         off52: hi52 > 0 && px ? px / hi52 - 1 : null,
@@ -786,6 +801,8 @@
         '<td class="' + (r.m3 >= 0 ? "up" : "down") + '">' + fmt.pct(r.m3, 1) + "</td>" +
         '<td class="' + (r.ytd >= 0 ? "up" : "down") + '">' + fmt.pct(r.ytd, 1) + "</td>" +
         '<td class="' + (r.y1 >= 0 ? "up" : "down") + '">' + fmt.pct(r.y1, 1) + "</td>" +
+        '<td class="' + (r.yld >= 0.03 ? "up" : "") + '" title="Trailing 12-month cash dividend / last close">' +
+        (r.yld ? fmt.pctAbs(r.yld, 1) : "–") + "</td>" +
         "<td>" + fmt.pctAbs(r.vol != null ? r.vol * Math.sqrt(252) : null, 1) + "</td>" +
         "<td>" + (r.rsi != null ? r.rsi.toFixed(0) : "–") + "</td>" +
         '<td class="down">' + fmt.pct(r.off52, 1) + "</td>" +
@@ -801,6 +818,7 @@
       frag.appendChild(tr);
     });
     tb.appendChild(frag);
+    updateSortMarks("scr-table", scrState);
     // sparklines
     Array.prototype.forEach.call(tb.querySelectorAll("tr"), function (tr, i) {
       var r = rows[i];
@@ -1195,6 +1213,11 @@
 
   function renderRiskTable() {
     var risks = core.assetRisk();
+    // both-basis dividend uplift per ticker (TOTAL − PRICE, full sample) —
+    // shown as a chip on CAGR/Sharpe so the effect of the header PRICE/TOTAL
+    // switch on high-yield names is readable without memorising both views
+    var dl = {};
+    core.riskDeltas().forEach(function (d) { dl[d.ticker] = d; });
     var tb = $("r-table").querySelector("tbody");
     tb.innerHTML = "";
     risks.slice().sort(function (a, b) {
@@ -1202,21 +1225,31 @@
       var cmp = (typeof av === "string") ? av.localeCompare(bv) : av - bv;
       return riskState.desc ? -cmp : cmp;
     }).forEach(function (r) {
+      var d = dl[r.ticker];
+      var cagrChip = (d && d.divCagr >= 5e-4)
+        ? '<span class="delta-chip" title="Dividend uplift: CAGR with dividends reinvested minus price CAGR, full sample">+' +
+          (d.divCagr * 100).toFixed(1) + "pp</span>"
+        : "";
+      var sharpeChip = (d && d.divSharpe >= 0.005)
+        ? '<span class="delta-chip" title="Dividend uplift: Sharpe on the total-return chain minus price-basis Sharpe, full sample">+' +
+          d.divSharpe.toFixed(2) + "</span>"
+        : "";
       var tr = document.createElement("tr");
       tr.innerHTML =
         '<td class="ticker-cell">' + r.ticker + "</td>" +
         "<td>" + fmt.pctAbs(r.vol, 1) + "</td>" +
-        "<td>" + fmt.num(r.sharpe, 2) + "</td>" +
+        '<td class="num-cell">' + fmt.num(r.sharpe, 2) + sharpeChip + "</td>" +
         "<td>" + fmt.num(r.sortino, 2) + "</td>" +
         '<td class="neg">' + fmt.pctAbs(r.maxdd, 1) + "</td>" +
         '<td class="neg">' + fmt.pctAbs(r.var95, 1) + "</td>" +
         '<td class="neg">' + fmt.pctAbs(r.cvar95, 1) + "</td>" +
         "<td>" + fmt.num(r.beta, 2) + "</td>" +
-        '<td class="' + (r.cagr >= 0 ? "up" : "down") + '">' + fmt.pctAbs(r.cagr, 1) + "</td>" +
+        '<td class="' + (r.cagr >= 0 ? "up" : "down") + ' num-cell">' + fmt.pctAbs(r.cagr, 1) + cagrChip + "</td>" +
         '<td class="' + (r.yld >= 0.03 ? "up" : "") + '">' +
         (r.yld ? fmt.pctAbs(r.yld, 1) : "–") + "</td>";
       tb.appendChild(tr);
     });
+    updateSortMarks("r-table", riskState);
   }
 
   function drawRiskCharts() {

@@ -880,6 +880,7 @@
     quintCache = {};
     factorCorrCache = null;
     riskCache = null;
+    riskDeltaCache = null;
   }
 
   function computeICAt(i, key) {
@@ -1222,6 +1223,39 @@
     return out;
   }
 
+  /* Both-basis twin of assetRisk(): full-sample CAGR and Sharpe for every
+     ticker on the PRICE chain AND on the TOTAL chain, regardless of which
+     basis is active. The UI shows the difference as a "dividend uplift"
+     chip so switching the header basis makes the risk/return change of
+     high-yield names readable at a glance. Rebuilds the same daily series
+     assetRisk() consumes under each setting, so the numbers agree
+     bit-for-bit with the table whichever basis is active. */
+  var riskDeltaCache = null;
+  function riskDeltas() {
+    if (riskDeltaCache) return riskDeltaCache;
+    var DAYS_ = DAYS();
+    var out = [];
+    for (var t = 0; t < N; t++) {
+      var tk = TICKERS[t];
+      var rsP = [], rsT = [];
+      for (var i = 1; i < DAYS_; i++) {
+        var a = S.closeMat[i - 1][t], b = S.closeMat[i][t];
+        if (!a || !b) continue;                     // matches S.rets null skips
+        rsP.push(b / a - 1);
+        rsT.push((b + divOn(tk, D.dates[i])) / a - 1);
+      }
+      var mP = perfMetrics(rsP, null), mT = perfMetrics(rsT, null);
+      out.push({
+        ticker: tk,
+        cagrPrice: mP.cagr, cagrTotal: mT.cagr,
+        sharpePrice: mP.sharpe, sharpeTotal: mT.sharpe,
+        divCagr: mT.cagr - mP.cagr, divSharpe: (mT.sharpe || 0) - (mP.sharpe || 0),
+      });
+    }
+    riskDeltaCache = out;
+    return out;
+  }
+
   function corrMatrix(lookbackDays) {
     var DAYS_ = DAYS();
     var window = Math.min(lookbackDays, DAYS_ - 1);
@@ -1293,6 +1327,7 @@
     resolveSuspectedSplit: resolveSuspectedSplit, splitLog: function () { return SPLIT_LOG.slice(); },
     icData: icData, quintileSpread: quintileSpread, factorCorrMatrix: factorCorrMatrix,
     runBacktest: runBacktest, perfMetrics: perfMetrics, assetRisk: assetRisk,
+    riskDeltas: riskDeltas,
     corrMatrix: corrMatrix, rollingVolSeries: rollingVolSeries, underwaterSeries: underwaterSeries,
     rsiCutlerAt: rsiCutlerAt, rollingVolAt: rollingVolAt,
     stats: { mean: mean, std: std, spearman: spearman, pearson: pearson, pctPositive: pctPositive },
