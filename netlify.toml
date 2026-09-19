@@ -1,0 +1,34 @@
+# QuantPulse — Netlify deployment config
+# Fully static bundle + one serverless function for live market data.
+# Drag & drop this folder at https://app.netlify.com/drop — done.
+
+[build]
+  publish = "."
+  command = "echo 'Static bundle — nothing to build.'"
+  functions = "netlify/functions"
+
+# Clean alias for the live-data function: /api/quotes
+# (must stay ABOVE the SPA catch-all below — Netlify evaluates in order)
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+[[headers]]
+  for = "/js/data.js"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# SPA-safe fallback: everything resolves from the root index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
