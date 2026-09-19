@@ -387,6 +387,8 @@ main { flex: 1 1 auto; width: 100%; max-width: 1460px; margin: 0 auto; padding: 
   opacity: 0.85;
 }
 .delta-chip:hover { opacity: 1; }
+/* negative dividend delta (long-short books whose shorts owe ex-div drops) */
+.delta-chip.neg { color: var(--down); }
 .data-table td {
   padding: 7px 10px; text-align: right; white-space: nowrap;
   border-bottom: 1px solid rgba(255,255,255,0.035);

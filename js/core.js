@@ -213,6 +213,49 @@
     candleIdx: {},      // "YYYY-MM-DD" -> index in D.candle_dates
   };
 
+  /* Daily return matrix + equal-weight benchmark returns for ONE basis.
+     Shared by rebuildDerived (the ACTIVE basis) and otherBasisSeries (the
+     twin), so both chains come from the identical formula set and the twin
+     agrees bit-for-bit with what a real basis switch would produce. */
+  function buildSeries(totalBasis) {
+    var DAYS_ = D.dates.length;
+    var rets = [null];
+    for (var i = 1; i < DAYS_; i++) {
+      var r = new Array(N);
+      var dstr = totalBasis ? D.dates[i] : null;
+      for (var t = 0; t < N; t++) {
+        var a = S.closeMat[i - 1][t], b = S.closeMat[i][t];
+        if (!a || !b) { r[t] = null; continue; }
+        r[t] = totalBasis ? (b + divOn(TICKERS[t], dstr)) / a - 1 : b / a - 1;
+      }
+      rets.push(r);
+    }
+    var benchRets = [0];
+    if (!totalBasis) {
+      for (i = 1; i < DAYS_; i++) benchRets.push(D.benchmark[i] / D.benchmark[i - 1] - 1);
+    } else {
+      for (i = 1; i < DAYS_; i++) {
+        var row = rets[i] || [], vals = [];
+        for (t = 0; t < N; t++) if (row[t] != null) vals.push(row[t]);
+        benchRets.push(vals.length ? mean(vals) : 0);
+      }
+    }
+    return { rets: rets, benchRets: benchRets };
+  }
+
+  /* Both-basis twin for the backtester: the full daily return matrix and
+     equal-weight benchmark on the INACTIVE basis. Factor scores are
+     price-based by design and data availability is basis-independent, so a
+     backtest rerun on these series follows the identical holdings path —
+     only the daily P&L differs — which lets the UI chip the dividend
+     uplift on CAGR/Sharpe without touching the active basis. */
+  var twinSeriesCache = null;
+  function otherBasisSeries() {
+    if (twinSeriesCache) return twinSeriesCache;
+    twinSeriesCache = buildSeries(returnBasis !== "total");
+    return twinSeriesCache;
+  }
+
   function rebuildDerived() {
     var DAYS = D.dates.length;
     S.closeMat = [];
@@ -222,34 +265,16 @@
       S.closeMat.push(row);
     }
     var totalBasis = returnBasis === "total";
-    S.rets = [null];
-    for (i = 1; i < DAYS; i++) {
-      var r = new Array(N);
-      var dstr = totalBasis ? D.dates[i] : null;
-      for (t = 0; t < N; t++) {
-        var a = S.closeMat[i - 1][t], b = S.closeMat[i][t];
-        if (!a || !b) { r[t] = null; continue; }
-        r[t] = totalBasis ? (b + divOn(TICKERS[t], dstr)) / a - 1 : b / a - 1;
-      }
-      S.rets.push(r);
-    }
-    // equal-weight benchmark on the ACTIVE basis: the bundled price chain,
-    // or a total-return chain re-derived from the rets matrix
-    S.benchRets = [0];
+    var ser = buildSeries(totalBasis);
+    S.rets = ser.rets;
+    S.benchRets = ser.benchRets;
+    // equal-weight benchmark LEVEL on the ACTIVE basis: the bundled price
+    // chain, or a total-return chain re-derived from the rets matrix
     S.benchLevel = [100];
     if (!totalBasis) {
-      for (i = 1; i < DAYS; i++) {
-        S.benchRets.push(D.benchmark[i] / D.benchmark[i - 1] - 1);
-        S.benchLevel.push(D.benchmark[i]);
-      }
+      for (i = 1; i < DAYS; i++) S.benchLevel.push(D.benchmark[i]);
     } else {
-      for (i = 1; i < DAYS; i++) {
-        var row = S.rets[i] || [], vals = [];
-        for (t = 0; t < N; t++) if (row[t] != null) vals.push(row[t]);
-        var mr = vals.length ? mean(vals) : 0;
-        S.benchRets.push(mr);
-        S.benchLevel.push(S.benchLevel[i - 1] * (1 + mr));
-      }
+      for (i = 1; i < DAYS; i++) S.benchLevel.push(S.benchLevel[i - 1] * (1 + S.benchRets[i]));
     }
     S.dateIdx = {};
     D.dates.forEach(function (d, i) { S.dateIdx[d] = i; });
@@ -756,6 +781,25 @@
     }
     return vals.length >= Math.floor(win * 0.7) ? std(vals) : null;
   }
+  /* Price-basis rolling std for FACTOR SIGNALS (low_volatility): scores
+     are documented to stay price-based whatever the active return basis
+     is, while risk statistics follow the active basis. Chained from raw
+     closes, so the signal is identical under PRICE and TOTAL — without
+     this, a TOTAL-basis run would let dividends leak into the low-vol
+     ranking and quietly reshuffle the composite's deep tail. */
+  function priceRetAt(k, t) {
+    if (k < 1) return null;
+    var a = S.closeMat[k - 1][t], b = S.closeMat[k][t];
+    return a && b ? b / a - 1 : null;
+  }
+  function rollingPriceVolAt(i, win, t) {
+    var vals = [];
+    for (var k = i - win + 1; k <= i; k++) {
+      var r = priceRetAt(k, t);
+      if (r != null) vals.push(r);
+    }
+    return vals.length >= Math.floor(win * 0.7) ? std(vals) : null;
+  }
   function rsiCutlerAt(i, win, t) {
     var up = 0, dn = 0, cnt = 0;
     for (var k = i - win + 1; k <= i; k++) {
@@ -812,7 +856,7 @@
     low_volatility: function (i) {
       var out = new Array(N);
       for (var t = 0; t < N; t++) {
-        var v = rollingVolAt(i, 20, t);
+        var v = rollingPriceVolAt(i, 20, t);
         out[t] = v == null ? null : -v;
       }
       return out;
@@ -881,6 +925,7 @@
     factorCorrCache = null;
     riskCache = null;
     riskDeltaCache = null;
+    twinSeriesCache = null;
   }
 
   function computeICAt(i, key) {
@@ -1062,12 +1107,18 @@
     };
   }
 
-  /* cfg: {signal, signalFn, startIdx, topN, rebalMonths, costBps, mode: "long"|"longshort"}
+  /* cfg: {signal, signalFn, startIdx, topN, rebalMonths, costBps, mode: "long"|"longshort",
+           rets, benchRets}
      signalFn(dayIdx) -> array of N scores lets external models (e.g. the ML lab)
-     drive the same position engine; startIdx postpones the first rebalance.  */
+     drive the same position engine; startIdx postpones the first rebalance.
+     rets / benchRets optionally override the active-basis return series with
+     a twin (otherBasisSeries) so the same holdings path can be priced under
+     the other return convention — used for the dividend-uplift chips. */
   function runBacktest(cfg) {
     var t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
     var DAYS_ = DAYS();
+    var retsM = cfg.rets || S.rets;
+    var benchM = cfg.benchRets || S.benchRets;
     var rebalDays = [];
     var lastPeriod = -1;
     var startIdx = 252;
@@ -1108,7 +1159,7 @@
         }
         var idx = [];
         for (var t = 0; t < N; t++) {
-          if (scores[t] != null && S.rets[i] && S.rets[i][t] != null) idx.push(t);
+          if (scores[t] != null && retsM[i] && retsM[i][t] != null) idx.push(t);
         }
         idx.sort(function (a, b) { return scores[b] - scores[a]; });
         var pick;
@@ -1134,9 +1185,9 @@
 
         // day's return on the OLD book, then switch at the close
         var drR = 0;
-        if (S.rets[i]) {
+        if (retsM[i]) {
           for (t = 0; t < N; t++) {
-            if (weights[t] !== 0 && S.rets[i][t] != null) drR += weights[t] * S.rets[i][t];
+            if (weights[t] !== 0 && retsM[i][t] != null) drR += weights[t] * retsM[i][t];
           }
         }
         var dayNet = drR - cost;
@@ -1152,9 +1203,9 @@
       }
       // normal day: portfolio return = sum(w_drifted * r), then drift weights
       var dr = 0;
-      if (S.rets[i]) {
+      if (retsM[i]) {
         for (t = 0; t < N; t++) {
-          if (weights[t] !== 0 && S.rets[i][t] != null) dr += weights[t] * S.rets[i][t];
+          if (weights[t] !== 0 && retsM[i][t] != null) dr += weights[t] * retsM[i][t];
         }
       }
       var eq2 = equity[equity.length - 1] * (1 + dr);
@@ -1165,7 +1216,7 @@
       // drift
       if (1 + dr !== 0) {
         for (t = 0; t < N; t++) {
-          var rt = S.rets[i] ? S.rets[i][t] : null;
+          var rt = retsM[i] ? retsM[i][t] : null;
           if (weights[t] !== 0 && rt != null) weights[t] = weights[t] * (1 + rt) / (1 + dr);
         }
       }
@@ -1174,7 +1225,7 @@
     // benchmark aligned to the same dates
     var bench = [100];
     for (i = rebalDays[0]; i < DAYS_; i++) {
-      bench.push(bench[bench.length - 1] * (1 + S.benchRets[i]));
+      bench.push(bench[bench.length - 1] * (1 + benchM[i]));
     }
     var benchDaily = [];
     for (i = 1; i < bench.length; i++) benchDaily.push(bench[i] / bench[i - 1] - 1);
@@ -1327,7 +1378,7 @@
     resolveSuspectedSplit: resolveSuspectedSplit, splitLog: function () { return SPLIT_LOG.slice(); },
     icData: icData, quintileSpread: quintileSpread, factorCorrMatrix: factorCorrMatrix,
     runBacktest: runBacktest, perfMetrics: perfMetrics, assetRisk: assetRisk,
-    riskDeltas: riskDeltas,
+    riskDeltas: riskDeltas, otherBasisSeries: otherBasisSeries,
     corrMatrix: corrMatrix, rollingVolSeries: rollingVolSeries, underwaterSeries: underwaterSeries,
     rsiCutlerAt: rsiCutlerAt, rollingVolAt: rollingVolAt,
     stats: { mean: mean, std: std, spearman: spearman, pearson: pearson, pctPositive: pctPositive },

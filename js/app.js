@@ -681,7 +681,7 @@
   }
 
   /* ============================ SCREENER =============================== */
-  var scrState = { sortKey: "day", desc: true, search: "", sector: "" };
+  var scrState = { sortKey: "day", desc: true, search: "", sector: "", yldMin: 0 };
 
   // reflect the active sort column/direction on a table's headers: an arrow
   // glyph on the sorted column + aria-sort for screen readers
@@ -754,6 +754,10 @@
         scrState.sector = this.value;
         renderScreenerRows();
       });
+      $("scr-yld").addEventListener("change", function () {
+        scrState.yldMin = parseFloat(this.value) || 0;
+        renderScreenerRows();
+      });
       Array.prototype.forEach.call($("scr-table").querySelectorAll("th[data-k]"), function (th) {
         th.addEventListener("click", function () {
           var k = th.getAttribute("data-k");
@@ -777,6 +781,9 @@
       });
     }
     if (scrState.sector) rows = rows.filter(function (r) { return r.sector === scrState.sector; });
+    if (scrState.yldMin > 0) {
+      rows = rows.filter(function (r) { return r.yld != null && r.yld >= scrState.yldMin; });
+    }
     rows.sort(function (a, b) {
       var av = a[scrState.sortKey], bv = b[scrState.sortKey];
       if (typeof av === "string") return scrState.desc ? bv.localeCompare(av) : av.localeCompare(bv);
@@ -1007,21 +1014,56 @@
   RENDER.backtest = drawBacktest;
 
   var lastBT = null;
+
+  // signed dividend-uplift chip for the backtest metric cards. The risk
+  // table's per-stock chips are always positive; a long-short book's short
+  // legs OWE the ex-dividend drop under the total-return convention, so
+  // here the delta can legitimately be negative (rendered red).
+  function btDivChip(delta, kind) {
+    if (delta == null || !isFinite(delta)) return "";
+    var scaled = kind === "cagr" ? delta * 100 : delta;
+    if (Math.abs(scaled) < (kind === "cagr" ? 0.05 : 0.005)) return "";
+    var up = delta >= 0;
+    var tip = kind === "cagr"
+      ? "Dividend uplift: CAGR on the total-return chain minus price-basis CAGR — same holdings, weights and costs"
+      : "Dividend uplift: Sharpe on the total-return chain minus price-basis Sharpe — same holdings, weights and costs";
+    if (!up) tip += " (short legs owe the ex-dividend drop under the total-return convention)";
+    return '<span class="delta-chip' + (up ? "" : " neg") + '" title="' + tip + '">' +
+      (up ? "+" : "−") + Math.abs(scaled).toFixed(kind === "cagr" ? 1 : 2) +
+      (kind === "cagr" ? "pp" : "") + "</span>";
+  }
+
   function runAndRenderBT() {
-    var res = core.runBacktest({
+    var btCfg = {
       signal: btState.strat, topN: btState.topN,
       rebalMonths: btState.rebal, costBps: btState.cost, mode: btState.mode,
-    });
+    };
+    var res = core.runBacktest(btCfg);
     if (!res) return;
     lastBT = res;
     var label = STRATEGY_LABELS[btState.strat];
     var m = res.metrics;
     var bm = core.perfMetrics(res.benchDaily, res.benchDaily);
 
+    /* twin-basis rerun: identical holdings path (factor scores are
+       price-based, data availability is basis-independent), priced under
+       the other return convention — the delta becomes the dividend chip */
+    var twin = core.runBacktest(Object.assign({}, btCfg, core.otherBasisSeries()));
+    var onTotal = core.getReturnBasis() === "total";
+    var divCagr = null, divSharpe = null;
+    if (twin) {
+      var cagrT = onTotal ? m.cagr : twin.metrics.cagr;
+      var cagrP = onTotal ? twin.metrics.cagr : m.cagr;
+      var shT = onTotal ? m.sharpe : twin.metrics.sharpe;
+      var shP = onTotal ? twin.metrics.sharpe : m.sharpe;
+      divCagr = cagrT - cagrP;
+      divSharpe = (shT == null || shP == null) ? null : shT - shP;
+    }
+
     var cards = [
-      { l: "CAGR", v: fmt.pctAbs(m.cagr, 1), c: m.cagr >= bm.cagr ? "up" : "down" },
+      { l: "CAGR", v: fmt.pctAbs(m.cagr, 1), c: m.cagr >= bm.cagr ? "up" : "down", chip: btDivChip(divCagr, "cagr") },
       { l: "vs Universe", v: fmt.pct(m.cagr - bm.cagr, 1), c: m.cagr >= bm.cagr ? "up" : "down" },
-      { l: "Sharpe", v: m.sharpe == null ? "–" : m.sharpe.toFixed(2), c: m.sharpe >= 1 ? "up" : "" },
+      { l: "Sharpe", v: m.sharpe == null ? "–" : m.sharpe.toFixed(2), c: m.sharpe >= 1 ? "up" : "", chip: btDivChip(divSharpe, "sharpe") },
       { l: "Sortino", v: m.sortino == null ? "–" : m.sortino.toFixed(2), c: m.sortino >= 1.4 ? "up" : "" },
       { l: "Vol (ann.)", v: fmt.pctAbs(m.vol, 1) },
       { l: "Max DD", v: fmt.pctAbs(m.maxdd, 1), c: "down" },
@@ -1037,7 +1079,7 @@
     cards.forEach(function (cd) {
       box.appendChild(el("div", "bt-metric",
         '<div class="bm-label">' + cd.l + '</div>' +
-        '<div class="bm-value ' + (cd.c || "") + '">' + cd.v + "</div>"));
+        '<div class="bm-value ' + (cd.c || "") + '">' + cd.v + (cd.chip || "") + "</div>"));
     });
     $("b-eq-hint").textContent =
       label + " · " + (btState.mode === "longshort" ? "long-short top/bottom " + btState.topN : "long top " + btState.topN) +

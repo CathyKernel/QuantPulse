@@ -115,16 +115,27 @@ quantpulse/
   quintile forward returns, ML training targets, screener windows and the
   equal-weight universe index. Candlesticks, Terminal price charts and factor
   signals stay price-based (a candle cannot embed a cash payout; momentum-type
-  signals are classically price-based). The dividend calendar (1,400+ ex-dates
-  since 2015, bundled in `js/divs.js`) extends live as new ex-dates merge.
-- **Dividend-uplift chips & sortable tables**: the risk table's CAGR and Sharpe
-  cells carry an amber chip with the full-sample dividend uplift
-  (TOTAL − PRICE, e.g. PFE `+6.3pp` CAGR / `+0.24` Sharpe), so toggling the
-  basis makes the change visible without memorising both views — sort by
+  signals are classically price-based; the low-volatility signal chains raw
+  closes so no ranking shifts with the basis). The dividend calendar (1,400+
+  ex-dates since 2015, bundled in `js/divs.js`) extends live as new ex-dates
+  merge.
+- **Dividend-uplift chips, sortable tables & yield filter**: the risk table's
+  CAGR and Sharpe cells carry an amber chip with the full-sample dividend
+  uplift (TOTAL − PRICE, e.g. PFE `+6.3pp` CAGR / `+0.24` Sharpe), so toggling
+  the basis makes the change visible without memorising both views — sort by
   **Div yld** (PFE / AMT / DUK surface on top) and switch TOTAL to compare
   high-yield names at a glance. The screener gained a trailing-12-month
-  **Div yld** column (sortable, ≥3% highlighted), and both tables now show a
-  sort-direction arrow plus `aria-sort` on the active column header.
+  **Div yld** column (sortable, ≥3% highlighted) plus a minimum-yield filter
+  (**Any / ≥1% … ≥5%**; ≥3% keeps exactly the 7 payers PFE, AMT, DUK, CVX,
+  PLD, HD, NEE), and both tables show a sort-direction arrow plus `aria-sort`
+  on the active column header.
+- **Backtest dividend annotation**: the Backtest lab's CAGR and Sharpe cards
+  carry the same chip, computed by rerunning the engine on the other basis's
+  return chain with the identical holdings path, weights and costs — so the
+  chip is the strategy's dividend contribution (e.g. momentum long-only
+  `+2.1pp` CAGR; equal-weight universe `+2.7pp`). Long-short books can show a
+  red negative chip because the short legs owe the ex-dividend drop under the
+  total-return convention.
 - The universe is a static demonstration panel, not a tradable index.
 
 ## License
