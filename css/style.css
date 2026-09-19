@@ -577,3 +577,16 @@ main { flex: 1 1 auto; width: 100%; max-width: 1460px; margin: 0 auto; padding: 
 }
 .ml-run-btn:hover:not(:disabled) { filter: brightness(1.1); }
 .ml-run-btn:disabled, #ml-compare:disabled { opacity: 0.45; cursor: default; }
+
+/* brief highlight when a manual retrain refreshes the cards */
+#ml-stats.ml-flash .stat {
+  animation: mlStatFlash 0.9s ease;
+}
+@keyframes mlStatFlash {
+  0%   { border-color: rgba(103, 232, 249, 0.65); background: rgba(103, 232, 249, 0.14); }
+  60%  { border-color: rgba(167, 139, 250, 0.4);  background: rgba(167, 139, 250, 0.10); }
+  100% { border-color: var(--glass-border);       background: var(--glass); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #ml-stats.ml-flash .stat { animation: none; }
+}

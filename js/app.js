@@ -1348,7 +1348,7 @@
         // force a fresh retrain of the selected model
         QP.ml.invalidate();
         mlState.result = null;
-        startMLRun(false);
+        startMLRun(false, { manual: true });
       });
       $("ml-compare").addEventListener("click", function () { startMLRun(true); });
       bindSeg("ml-mode", function (v) { mlState.mode = v; renderMLBacktest(); renderMLPicks(); });
@@ -1375,10 +1375,26 @@
     if (note != null) $("ml-status").textContent = note;
   }
 
-  function startMLRun(all) {
+  /* Ridge retrains in ~0.1s; without a floor the busy state flashes by
+     invisibly and the button looks dead. Keep it on screen briefly. */
+  var ML_MIN_BUSY_MS = 750;
+  var mlRunSeq = 0;
+
+  function flashMLStats() {
+    var box = $("ml-stats");
+    if (!box) return;
+    box.classList.remove("ml-flash");
+    void box.offsetWidth;                            // restart the animation
+    box.classList.add("ml-flash");
+  }
+
+  function startMLRun(all, opts) {
+    opts = opts || {};
+    var manual = !!opts.manual;
     if (mlState.handle) mlState.handle.cancel();
+    var seq = ++mlRunSeq;
     var modelKey = all ? "all" : mlState.model;
-    mlSetBusy(true, all ? "benchmarking every model…" : "training…");
+    mlSetBusy(true, all ? "benchmarking every model…" : (manual ? "retraining…" : "training…"));
     $("ml-progress").classList.add("active");
     var t0 = Date.now();
     mlState.handle = QP.ml.run({
@@ -1389,24 +1405,35 @@
         $("ml-status").textContent = (all ? "benchmarking " : "walk-forward ") + (p * 100).toFixed(0) + "% · " + modelKey;
       },
       onDone: function (res) {
-        if (res && res.error) {
-          mlSetBusy(false, res.error);
-          toast(res.error, "err");
-          return;
-        }
-        mlSetBusy(false, "done in " + ((Date.now() - t0) / 1000).toFixed(1) + "s");
-        mlState.result = res;
-        // harvest scoreboard rows from whatever this run produced
-        Object.keys(res.perModel).forEach(function (m) {
-          if (!res.perModel[m] || !res.perModel[m].icData) return;
-          mlState.compare[m + "|" + res.trainMonths] = {
-            model: m, window: res.trainMonths,
-            summary: res.perModel[m].icData.summary,
-            quintiles: res.perModel[m].quintiles,
-            ms: m === "composite" ? 0 : res.ms,
-          };
-        });
-        renderMLResults();
+        var elapsed = (Date.now() - t0) / 1000;
+        var hold = Math.max(0, ML_MIN_BUSY_MS - (Date.now() - t0));
+        setTimeout(function () {
+          if (seq !== mlRunSeq) return;              // a newer run owns the UI now
+          if (res && res.error) {
+            mlSetBusy(false, res.error);
+            toast(res.error, "err");
+            return;
+          }
+          mlSetBusy(false, (manual ? "retrained" : "done") + " in " + elapsed.toFixed(1) + "s");
+          mlState.result = res;
+          // harvest scoreboard rows from whatever this run produced
+          Object.keys(res.perModel).forEach(function (m) {
+            if (!res.perModel[m] || !res.perModel[m].icData) return;
+            mlState.compare[m + "|" + res.trainMonths] = {
+              model: m, window: res.trainMonths,
+              summary: res.perModel[m].icData.summary,
+              quintiles: res.perModel[m].quintiles,
+              ms: m === "composite" ? 0 : res.ms,
+            };
+          });
+          renderMLResults();
+          if (manual) {
+            var mk = res.model === "all" ? "ensemble" : res.model;
+            toast((QP.ml.MODEL_LABELS[mk] || mk) + " retrained in " + elapsed.toFixed(1) +
+                  "s · seeded RNG — identical results by design", "ok");
+            flashMLStats();
+          }
+        }, hold);
       },
     });
   }
