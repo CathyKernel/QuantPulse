@@ -167,8 +167,22 @@ function normalize(result, interval) {
     });
   }
   const price = meta.regularMarketPrice != null ? meta.regularMarketPrice : (n ? q.close[n - 1] : null);
-  const prevClose = meta.chartPreviousClose != null ? meta.chartPreviousClose
-    : n > 1 ? q.close[n - 2] : null;
+  // "Day change" reference close. NOTE: for multi-day ranges Yahoo's
+  // meta.chartPreviousClose anchors the START of the range (e.g. ~1 month
+  // back for range=1mo), NOT yesterday's close — using it would turn the
+  // day change into a ~monthly move. The last COMPLETED daily bar before
+  // the latest one is the correct previous close in every daily-range case
+  // (in-session forming bar, after-close, weekends), so prefer it and keep
+  // chartPreviousClose only as a fallback (it is only correct for range=1d).
+  let prevClose = null;
+  if (!intraday) {
+    for (let i = n - 2; i >= 0; i--) {
+      if (q.close[i] != null) { prevClose = q.close[i]; break; }
+    }
+  }
+  if (prevClose == null && meta.regularMarketPreviousClose != null) prevClose = meta.regularMarketPreviousClose;
+  if (prevClose == null && meta.chartPreviousClose != null) prevClose = meta.chartPreviousClose;
+  if (prevClose == null && n > 0) prevClose = q.close[n - 1];
   const change = price != null && prevClose != null ? price - prevClose : null;
   return {
     price,

@@ -90,6 +90,9 @@ body {
 .brand-mark { width: 34px; height: 34px; filter: drop-shadow(0 0 10px rgba(37,211,224,0.35)); }
 .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-name {
+  /* an <h1> for document outline: reset UA defaults so the header looks
+     exactly as it did as a <span> */
+  margin: 0; display: inline-block;
   font-size: 17px; font-weight: 800; letter-spacing: 0.4px;
   background: var(--grad-brand);
   -webkit-background-clip: text; background-clip: text;

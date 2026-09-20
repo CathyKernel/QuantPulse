@@ -476,7 +476,6 @@
     var resid = new Float64Array(n);
     for (i = 0; i < n; i++) resid[i] = y[i] - ym;
     var trees = [];
-    var gain = new Float64Array(d);
 
     function buildNode(rowIdx, depth) {
       // histogram split search
@@ -498,7 +497,10 @@
           if (cl < MINLEAF || cr < MINLEAF) continue;
           var sc = rl * rl / cl + rr * rr / cr;
           if (!best || sc > best.score) {
-            best = { score: sc, feat: f, bin: b, gainV: sc - parentScore };
+            // bin(v) <= b  ⟺  v <= edges[f][b]: keep the raw threshold so
+            // prediction routes on the SAME scale the tree was trained on
+            // (bin indices 0..23 and z-scores live on different scales).
+            best = { score: sc, feat: f, bin: b, thr: edges[f][b], gainV: sc - parentScore };
           }
         }
       }
@@ -511,18 +513,17 @@
         (B[r1 * d + best.feat] <= best.bin ? left : right).push(r1);
       }
       if (!left.length || !right.length) return { leaf: true, value: totR / (totC || 1) };
-      gain[best.feat] += best.gainV;
       return {
-        leaf: false, feat: best.feat, bin: best.bin,
+        leaf: false, feat: best.feat, bin: best.bin, thr: best.thr,
         left: buildNode(left, depth + 1), right: buildNode(right, depth + 1),
       };
     }
     function treePredictFlat(node, X, base) {
-      while (!node.leaf) node = X[base + node.feat] > node.bin ? node.right : node.left;
+      while (!node.leaf) node = X[base + node.feat] > node.thr ? node.right : node.left;
       return node.value;
     }
     function treePredictRow(node, xrow) {
-      while (!node.leaf) node = xrow[node.feat] > node.bin ? node.right : node.left;
+      while (!node.leaf) node = xrow[node.feat] > node.thr ? node.right : node.left;
       return node.value;
     }
 
@@ -545,7 +546,6 @@
         for (var t2 = 0; t2 < trees.length; t2++) s += LR_ * treePredictRow(trees[t2], xrow);
         return s;
       },
-      gain: gain,
     };
   }
 
@@ -647,11 +647,10 @@
     var testKs = [];
     for (var k = 0; k < months.length; k++) {
       var Ti = months[k].i;
-      var usable = 0, cutoff = 0;
+      var usable = 0;
       for (var j = k - 1; j >= 0; j--) {
         if (months[j].i + 21 <= Ti && months[j].hasTarget) {
           usable++;
-          if (usable === 1) cutoff = j;
           if (usable >= trainMonths) break;
         }
       }

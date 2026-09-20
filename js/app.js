@@ -509,9 +509,12 @@
     };
   }
   function applyChartOptions() {
-    if (termState.intraday) { drawIntraday(); return; }
+    // apply options to the existing chart FIRST so intraday mode also picks
+    // them up (drawIntraday reuses the same instance and only sets data —
+    // without this, every option control is dead while 1D/5D is active)
     var chart = charts["t-candles"];
     if (chart) chart.setOptions(chartOpts());
+    if (termState.intraday) drawIntraday();
   }
 
   function drawIntraday() {
@@ -586,10 +589,11 @@
       if (n1 && n2) { v20 = s1 / n1; v120 = s2 / n2; }
     }
     var risk = core.assetRisk()[t];
+    var r1w = retOver(tk, 5), r1m = retOver(tk, 21), r3m = retOver(tk, 63), rytd = ytdReturn(tk);
     var rows = [
       ["Last", "$" + fmt.num(px, 2), ""],
-      ["1W / 1M", fmt.pct(retOver(tk, 5), 1) + " / " + fmt.pct(retOver(tk, 21), 1), "up"],
-      ["3M / YTD", fmt.pct(retOver(tk, 63), 1) + " / " + fmt.pct(ytdReturn(tk), 1), "up"],
+      ["1W / 1M", fmt.pct(r1w, 1) + " / " + fmt.pct(r1m, 1), (r1w != null ? r1w : r1m) >= 0 ? "up" : "down"],
+      ["3M / YTD", fmt.pct(r3m, 1) + " / " + fmt.pct(rytd, 1), (r3m != null ? r3m : rytd) >= 0 ? "up" : "down"],
       ["1Y return", fmt.pct(retOver(tk, 252), 1), retOver(tk, 252) >= 0 ? "up" : "down"],
       ["52W high / low", fmt.num(hi52, 1) + " / " + fmt.num(lo52, 1)],
       ["vs 52W high", fmt.pct(px / hi52 - 1, 1), "down"],
@@ -855,32 +859,34 @@
         });
         chips.appendChild(b);
       });
-      // scoreboard rows
-      var tb = $("f-summary").querySelector("tbody");
-      tb.innerHTML = "";
-      FACTOR_ORDER.forEach(function (key) {
-        var s = core.icData(key).summary;
-        var q = core.quintileSpread(key);
-        var tr = document.createElement("tr");
-        tr.style.cursor = "pointer";
-        tr.innerHTML =
-          '<td class="name-cell f-name">' + FACTOR_NAMES[key] + "</td>" +
-          '<td class="' + (s.mean >= 0 ? "pos" : "neg") + '">' + s.mean.toFixed(4) + "</td>" +
-          "<td>" + s.ir.toFixed(2) + "</td>" +
-          "<td>" + s.tstat.toFixed(1) + "</td>" +
-          "<td>" + (s.hit * 100).toFixed(0) + "%</td>" +
-          '<td class="' + (q.ls.meanMonthly >= 0 ? "pos" : "neg") + '">' + (q.ls.meanMonthly != null ? fmt.pct(q.ls.meanMonthly, 2) : "–") + "</td>" +
-          "<td>" + s.n + "</td>";
-        tr.addEventListener("click", function () {
-          facState.key = key;
-          Array.prototype.forEach.call(chips.children, function (c, i) {
-            c.classList.toggle("active", FACTOR_ORDER[i] === key);
-          });
-          drawFactorViews();
-        });
-        tb.appendChild(tr);
-      });
     }
+    // scoreboard rows — rebuilt on EVERY call: live-merged sessions extend
+    // the IC history and the charts beside this table recompute, so a
+    // one-time guard would leave stale stats contradicting them
+    var tb = $("f-summary").querySelector("tbody");
+    tb.innerHTML = "";
+    FACTOR_ORDER.forEach(function (key) {
+      var s = core.icData(key).summary;
+      var q = core.quintileSpread(key);
+      var tr = document.createElement("tr");
+      tr.style.cursor = "pointer";
+      tr.innerHTML =
+        '<td class="name-cell f-name">' + FACTOR_NAMES[key] + "</td>" +
+        '<td class="' + (s.mean >= 0 ? "pos" : "neg") + '">' + s.mean.toFixed(4) + "</td>" +
+        "<td>" + s.ir.toFixed(2) + "</td>" +
+        "<td>" + s.tstat.toFixed(1) + "</td>" +
+        "<td>" + (s.hit * 100).toFixed(0) + "%</td>" +
+        '<td class="' + (q.ls.meanMonthly >= 0 ? "pos" : "neg") + '">' + (q.ls.meanMonthly != null ? fmt.pct(q.ls.meanMonthly, 2) : "–") + "</td>" +
+        "<td>" + s.n + "</td>";
+      tr.addEventListener("click", function () {
+        facState.key = key;
+        Array.prototype.forEach.call(chips.children, function (c, i) {
+          c.classList.toggle("active", FACTOR_ORDER[i] === key);
+        });
+        drawFactorViews();
+      });
+      tb.appendChild(tr);
+    });
     drawFactorViews();
   }
   RENDER.factors = drawFactors;
@@ -1939,18 +1945,41 @@
 
   /* ============================ methodology ============================ */
   function wireMethodology() {
+    var modal = $("modal-methodology");
+    var lastFocus = null;
+    function openModal() {
+      lastFocus = document.activeElement;
+      modal.classList.add("open");
+      // move focus INTO the dialog and trap Tab within it (aria-modal)
+      var btn = $("modal-close");
+      if (btn) btn.focus();
+    }
+    function closeModal() {
+      modal.classList.remove("open");
+      if (lastFocus && lastFocus.focus) lastFocus.focus();   // return focus
+      lastFocus = null;
+    }
     $("ft-methodology").addEventListener("click", function (e) {
       e.preventDefault();
-      $("modal-methodology").classList.add("open");
+      openModal();
     });
-    $("modal-close").addEventListener("click", function () {
-      $("modal-methodology").classList.remove("open");
+    $("modal-close").addEventListener("click", closeModal);
+    modal.addEventListener("click", function (e) {
+      if (e.target === this) closeModal();
     });
-    $("modal-methodology").addEventListener("click", function (e) {
-      if (e.target === this) this.classList.remove("open");
+    modal.addEventListener("keydown", function (e) {
+      if (e.key !== "Tab") return;
+      var focusables = Array.prototype.filter.call(
+        modal.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+        function (n) { return n.offsetParent !== null; }
+      );
+      if (!focusables.length) return;
+      var first = focusables[0], last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") $("modal-methodology").classList.remove("open");
+      if (e.key === "Escape" && modal.classList.contains("open")) closeModal();
     });
   }
 

@@ -101,6 +101,8 @@
   /* --------------------------- fetch & poll ---------------------------- */
   var apiBase = null;   // resolved on first success
   var timer = null;
+  var inFlight = false; // guards against overlapping polls (slow request +
+                        // visibilitychange/refresh/timer all able to fire it)
 
   function urlFor(base, params) {
     var qs = Object.keys(params)
@@ -156,9 +158,12 @@
   }
 
   function poll() {
+    if (inFlight) return;               // a fetch is still outstanding
+    inFlight = true;
     S.lastAttempt = Date.now();
     var params = { range: "1mo", interval: "1d" };
     fetchQuotes(params).then(function (j) {
+      inFlight = false;
       if (!j || !j.ok || !j.quotes) throw new Error("bad payload");
       S.errorCount = 0;
       S.lastSuccess = Date.now();
@@ -173,9 +178,11 @@
       emit("quotes", { quotes: quotes, fetchedAt: j.fetchedAt, failed: j.failed || [] });
       scheduleNext();
     }).catch(function (err) {
+      inFlight = false;
       S.errorCount++;
-      if (S.mode !== "snapshot") { S.mode = "snapshot"; }
-      emit("status", S.mode);
+      // emit only on the actual transition — like the success path — so
+      // repeated failures do not re-trigger status subscribers pointlessly
+      if (S.mode !== "snapshot") { S.mode = "snapshot"; emit("status", S.mode); }
       scheduleNext(true);
     });
   }
@@ -191,7 +198,7 @@
       delay = S.intervalSec * 1000;
     }
     timer = setTimeout(function () {
-      if (document.hidden) { scheduleNext(); return; } // skip while hidden
+      if (document.hidden) { scheduleNext(isError); return; } // skip while hidden, keep the error-backoff rhythm
       poll();
     }, delay);
   }

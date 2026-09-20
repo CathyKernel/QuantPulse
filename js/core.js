@@ -381,8 +381,14 @@
   }
   function ratioLabel(num, den) {
     function gcd(a, b) { return b ? gcd(b, a % b) : a; }
-    var g = gcd(Math.round(num), Math.round(den)) || 1;
-    return (Math.round(num) / g) + ":" + (Math.round(den) / g);
+    // fractional ratios (e.g. a 2.5:1 split) must not be rounded to
+    // integers — scale both sides to integers first so 2.5:1 renders as
+    // the mathematically correct "5:2", not "3:1"
+    var a = +num, b = +den, s = 1;
+    while (s < 1000 && (Math.round(a * s) !== a * s || Math.round(b * s) !== b * s)) s *= 10;
+    a = Math.round(a * s); b = Math.round(b * s);
+    var g = gcd(a, b) || 1;
+    return (a / g) + ":" + (b / g);
   }
   // Rescale bundled history for tk to a new share basis. Bars dated ON or
   // AFTER the split ex-date (cutIdx / cutCandleIdx) already carry the new
@@ -427,11 +433,18 @@
     return rec;
   }
   // Post-application hygiene for the async escalation path: refresh every
-  // derived matrix, and when the split ex-date already sits inside history
-  // (repair), re-chain the equal-weight benchmark from that day onward.
-  function finalizeSplitApplication() {
-    var repaired = SPLIT_LOG[SPLIT_LOG.length - 1];
-    var exIdx = repaired ? S.dateIdx[repaired.date] : null;
+  // derived matrix, and when split ex-dates already sit inside history
+  // (repairs), re-chain the equal-weight benchmark from the EARLIEST day
+  // onward. `recs` = the records applied in this round (falls back to the
+  // last SPLIT_LOG entry so legacy single-split callers keep working).
+  function finalizeSplitApplication(recs) {
+    var list = recs && recs.length ? recs : [SPLIT_LOG[SPLIT_LOG.length - 1]];
+    var exIdx = null;
+    list.forEach(function (r) {
+      if (!r) return;
+      var i = S.dateIdx ? S.dateIdx[r.date] : null;
+      if (i != null && (exIdx == null || i < exIdx)) exIdx = i;
+    });
     rebuildDerived();
     if (exIdx != null) {
       rebuildBenchmarkFrom(exIdx);
@@ -449,7 +462,18 @@
      Returns {status: "apply"|"unconfirmed"|"none", rec?, lateIdx?} */
   function handleEventSplits(tk, events, gapSource, lastDate, dividends, maxDate) {
     var sorted = (events || []).slice().sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
-    var out = { status: "none", rec: null, repairFromIdx: null };
+    // recs: ALL applied records this round (a payload may carry ≥2 for one
+    // ticker); repairFromIdx: earliest repair day so the benchmark re-chain
+    // covers every rewritten segment, not just the last one
+    var out = { status: "none", rec: null, recs: [], repairFromIdx: null };
+    function noteApplied(rec, repairIdx) {
+      out.status = "apply";
+      out.rec = rec;
+      out.recs.push(rec);
+      if (repairIdx != null && (out.repairFromIdx == null || repairIdx < out.repairFromIdx)) {
+        out.repairFromIdx = repairIdx;
+      }
+    }
     var lastIdx = D.dates.length - 1;
     for (var e = 0; e < sorted.length; e++) {
       var d = sorted[e][0], num = +sorted[e][1], den = +sorted[e][2];
@@ -473,7 +497,7 @@
         if (ret != null && Math.abs((1 + ret) / (priceFactor * divAdj) - 1) <= LATE_RET_TOL) {
           var rec = applySplit(tk, { date: d, num: num, den: den, source: "event", verified: true, repair: true });
           if (rec) {
-            out.status = "apply"; out.rec = rec; out.repairFromIdx = exIdx;
+            noteApplied(rec, exIdx);
             console.warn("[splits] " + tk + " " + rec.ratio + " event arrived after its bar merged — history repaired");
           }
         } else {
@@ -489,7 +513,7 @@
       var prevClose = D.close[tk][lastIdx];
       if (!gap || gap.c == null || !(prevClose > 0)) {
         var rec2 = applySplit(tk, info);          // deferred validation
-        if (rec2) { out.status = "apply"; out.rec = rec2; }
+        if (rec2) noteApplied(rec2);
         continue;
       }
       var divSum = dividendSum(dividends, lastDate, gap.date);
@@ -497,7 +521,7 @@
       var closeMismatch = Math.abs(gap.c / prevClose / expected - 1);
       if (closeMismatch <= EVENT_MISMATCH) {
         var rec3 = applySplit(tk, info);
-        if (rec3) { out.status = "apply"; out.rec = rec3; }
+        if (rec3) noteApplied(rec3);
         continue;
       }
       // close deviates — a same-day market move? let the OPEN corroborate
@@ -505,7 +529,7 @@
         info.verified = false;
         var rec4 = applySplit(tk, info);
         if (rec4) {
-          out.status = "apply"; out.rec = rec4;
+          noteApplied(rec4);
           console.warn("[splits] " + tk + " " + label + " applied — close deviates " +
             (closeMismatch * 100).toFixed(1) + "% from the clean ratio (market move?)");
         }
@@ -531,9 +555,11 @@
       if (!(prevClose > 0)) return;
 
       var ev = handleEventSplits(tk, q.splits, q, lastDate, q.dividends, etInfo.todayStr);
-      if (ev.status === "apply" && ev.rec) {
-        report.splits.push(ev.rec);
-        if (ev.repairFromIdx != null && report.benchmarkRebuildFrom == null) report.benchmarkRebuildFrom = ev.repairFromIdx;
+      if (ev.status === "apply" && ev.recs.length) {
+        ev.recs.forEach(function (r) { report.splits.push(r); });
+        if (ev.repairFromIdx != null && (report.benchmarkRebuildFrom == null || ev.repairFromIdx < report.benchmarkRebuildFrom)) {
+          report.benchmarkRebuildFrom = ev.repairFromIdx;
+        }
         return;
       }
       if (ev.status === "unconfirmed") {
@@ -572,10 +598,16 @@
     if (!(prevClose > 0)) return out;
 
     if (series) {
-      mergeDividends(tk, series.dividends);   // wider calendar → fold before judging
+      // fold the wider dividend calendar BEFORE judging; if it introduced
+      // new in-history ex-dates the derived state must be rebuilt even when
+      // no split ends up being applied (total-basis returns, DIV_PREFIX,
+      // twin/risk caches would otherwise stay stale)
+      if (mergeDividends(tk, series.dividends)) {
+        rebuildDerived();
+      }
       var ev = handleEventSplits(tk, series.splits, series, lastDate, series.dividends, todayStr);
-      if (ev.status === "apply" && ev.rec) {
-        finalizeSplitApplication();
+      if (ev.status === "apply" && ev.recs.length) {
+        finalizeSplitApplication(ev.recs);
         out.applied = true; out.split = ev.rec;
         return out;
       }
@@ -615,7 +647,7 @@
           source: "heuristic", verified: false,
         });
         if (rec) {
-          finalizeSplitApplication();
+          finalizeSplitApplication([rec]);
           out.applied = true; out.split = rec;
           console.warn("[splits] " + tk + " " + rec.ratio + " applied by unverified heuristic (feed unavailable) — verify manually");
           return out;
@@ -750,6 +782,12 @@
         rebuildBenchmarkFrom(splitReport.benchmarkRebuildFrom);
         rebuildDerived();
       }
+    } else if (divFolded) {
+      // price basis: S.rets itself is unaffected by folded dividends, but
+      // the twin series / risk deltas read DIV_MAP — drop their caches so
+      // they recompute on demand instead of showing pre-fold numbers
+      twinSeriesCache = null;
+      riskDeltaCache = null;
     }
     return {
       appended: appended,
@@ -812,6 +850,7 @@
     }
     if (cnt < win * 0.7) return null;
     var aG = up / win, aL = dn / win;
+    if (aG === 0 && aL === 0) return 50;   // perfectly flat window: neutral
     return aL === 0 ? 100 : 100 - 100 / (1 + aG / aL);
   }
 
@@ -1253,16 +1292,22 @@
     var DAYS_ = DAYS();
     var out = [];
     for (var t = 0; t < N; t++) {
-      var rs = [];
+      // collect asset and benchmark returns PAIRWISE (same days) so a
+      // missing asset return (null close) cannot shift the index pairing
+      // and corrupt the daily OLS alpha/beta below
+      var rs = [], brs = [];
       for (var i = 1; i < DAYS_; i++) {
-        if (S.rets[i] && S.rets[i][t] != null) rs.push(S.rets[i][t]);
+        if (S.rets[i] && S.rets[i][t] != null) {
+          rs.push(S.rets[i][t]);
+          brs.push(S.benchRets[i]);
+        }
       }
-      var m = perfMetrics(rs, S.benchRets.slice(1));
+      var m = perfMetrics(rs, brs);
       var sorted = rs.slice().sort(function (a, b) { return a - b; });
       var k = Math.floor(sorted.length * 0.05);
-      var var95 = sorted[k];
+      var var95 = sorted.length ? sorted[k] : null;
       var tail = sorted.slice(0, k + 1);
-      var cvar95 = tail.reduce(function (s, v) { return s + v; }, 0) / tail.length;
+      var cvar95 = tail.length ? tail.reduce(function (s, v) { return s + v; }, 0) / tail.length : null;
       out.push({
         ticker: TICKERS[t], name: BY_TICKER[TICKERS[t]].name,
         vol: m.vol, sharpe: m.sharpe, sortino: m.sortino, maxdd: m.maxdd,

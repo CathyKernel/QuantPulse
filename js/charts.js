@@ -324,6 +324,8 @@
       self._mx = e.clientX - r.left;
       self._my = e.clientY - r.top;
       self._client = { x: e.clientX, y: e.clientY };
+      self._hoverActive = true;          // keep the pulse loop from erasing
+      // the stationary crosshair on its next redraw
       if (self._drag) {
         self.panByPixels(e.clientX - self._drag.x, self._drag.i0, self._drag.i1);
         return;
@@ -332,6 +334,7 @@
     });
     this.canvas.addEventListener("mouseleave", function () {
       self._hover = null;
+      self._hoverActive = false;
       hideTooltip();
       if (self._legendEl && !self._drag) self._legendEl.innerHTML = "";
       if (self._drawn && !self._drag) self.requestDraw();
@@ -811,6 +814,9 @@
         if (ind.macd.signal[i] != null) { mLo = Math.min(mLo, ind.macd.signal[i]); mHi = Math.max(mHi, ind.macd.signal[i]); }
       }
       var mPad = (mHi - mLo) * 0.1 || 0.1; mLo -= mPad; mHi += mPad;
+      // remember the panel's ACTUAL scale so the crosshair tags convert
+      // pixels back to values on the same scale the panel was drawn with
+      this._macdScale = { lo: mLo, hi: mHi };
       var mapM = function (val) { return macdPanel.y + macdPanel.h - ((val - mLo) / (mHi - mLo)) * macdPanel.h; };
       ctx.fillStyle = C.dim;
       ctx.font = "9.5px " + FONT_MONO;
@@ -873,13 +879,8 @@
       if (hoverPanel.id === "price") tagVal = invPrice(hy2);
       else if (hoverPanel.id === "vol") tagVal = ((vol.y + vol.h - hy2) / (vol.h * 0.92)) * (vmax || 0);
       else if (hoverPanel.id === "rsi" && ind.rsi) tagVal = ((rsiPanel.y + rsiPanel.h - hy2) / rsiPanel.h) * 100;
-      else if (hoverPanel.id === "macd" && ind.macd) {
-        var mLo2 = 0, mHi2 = 0;
-        for (var k = i0; k <= i1; k++) {
-          if (ind.macd.line[k] != null) { mLo2 = Math.min(mLo2, ind.macd.line[k]); mHi2 = Math.max(mHi2, ind.macd.line[k]); }
-          if (ind.macd.hist[k] != null) { mLo2 = Math.min(mLo2, ind.macd.hist[k]); mHi2 = Math.max(mHi2, ind.macd.hist[k]); }
-        }
-        tagVal = mLo2 + ((macdPanel.y + macdPanel.h - hy2) / macdPanel.h) * (mHi2 - mLo2);
+      else if (hoverPanel.id === "macd" && ind.macd && this._macdScale) {
+        tagVal = this._macdScale.lo + ((macdPanel.y + macdPanel.h - hy2) / macdPanel.h) * (this._macdScale.hi - this._macdScale.lo);
       }
       if (tagVal != null) {
         var tagTxt = hoverPanel.id === "price" ? fmt.num(tagVal, priceDecimals)
@@ -902,7 +903,13 @@
       this._pulseTimer = true;
       (function pulse() {
         if (!self2._livePulse) { self2._pulseTimer = false; return; }
-        self2.requestDraw();
+        // pause while the panel is hidden (clientWidth 0): a hidden canvas
+        // must not burn CPU at 60fps until the forming bar closes; the loop
+        // restarts on the next visible draw / resize callback
+        if (!self2.el.clientWidth) { self2._pulseTimer = false; return; }
+        // pass the hover state so the redraw does not erase a stationary
+        // crosshair and reset the OHLC legend to the last bar
+        self2.requestDraw(self2._hoverActive || undefined);
         requestAnimationFrame(pulse);
       })();
     }
@@ -1015,7 +1022,10 @@
   };
 
   LineChart.prototype._calc = function () {
-    if (this._xy) return this._xy;
+    // cached layout is keyed to the canvas geometry: begin() refreshes
+    // this.w/this.h on every draw, so a container resize invalidates the
+    // cache here instead of reusing a frame sized to the old box
+    if (this._xy && this._xy.cw === this.w && this._xy.ch === this.h) return this._xy;
     var f = this.frame();
     var lo = Infinity, hi = -Infinity;
     for (var s = 0; s < this.series.length; s++) {
@@ -1040,7 +1050,7 @@
           return f.y + f.h - ((lv - ll) / (lh - ll)) * f.h;
         }
       : function (v) { return f.y + f.h - ((v - lo) / (hi - lo)) * f.h; };
-    this._xy = { f: f, lo: lo, hi: hi, mapX: mapX, mapY: mapY, n: n };
+    this._xy = { f: f, lo: lo, hi: hi, mapX: mapX, mapY: mapY, n: n, cw: this.w, ch: this.h };
     return this._xy;
   };
 
